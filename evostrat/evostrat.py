@@ -10,9 +10,6 @@ class BasicES():
         xo: initial centroid
         step_size: float. the size of mutations
         num_mutations: number of dims to mutate in each iter (defaults to #dim)
-        bounds: 2D numpy array. # parameter X 2 array, (low, high)
-        bounardy_type: "repair" or "periodic"
-        penalty_coef: float, size of penalty for repair boundary
         verbose: True/False. print info on run
 
         """
@@ -20,8 +17,8 @@ class BasicES():
         from mpi4py import MPI
         self._MPI = MPI
         self._comm = MPI.COMM_WORLD
-        self._size = comm.Get_size()
-        self._rank = comm.Get_rank()
+        self._size = self._comm.Get_size()
+        self._rank = self._comm.Get_rank()
 
         # User input parameters
         self.objective = kwargs.get('objective', None)
@@ -41,7 +38,7 @@ class BasicES():
 
         # Internal data
         self._global_rng = np.random.RandomState(self._global_seed)
-        self._seed_set = self._global_rng.choice(0, 1000000, size=self._size, 
+        self._seed_set = self._global_rng.choice(1000000, size=self._size, 
                                                 replace=False)
         self._worker_rngs = [ np.random.RandomState(seed) 
                                 for seed in self._seed_set ]
@@ -55,15 +52,15 @@ class BasicES():
 
     def __call__(self, num_iterations, objective_funct=None, args=()):
 
-        if (self.objective != None) and (objective_funct != None):
+        if (self.objective != None) and (objective_funct == None):
             objective_funct = self.objective
             args = self.obj_args
-        else:
+        elif (self.objective == None) and (objective_funct == None):
             raise AttributeError("Error: No objective defined")
-
+        
         partial_objective = partial(objective_funct, *args)
         for i in range(num_iterations):
-            if self.verbose and (self._rank == 0):
+            if self._verbose and (self._rank == 0):
                 print("Generation:", self._generation_number)
             self._update(partial_objective)
             self._generation_number += 1
@@ -84,15 +81,15 @@ class BasicES():
 
         # Consolidate return values
         all_costs = np.empty(self._size, dtype=np.float32)
-        self.comm.Allgather([local_cost, self.MPI.FLOAT], 
-                            [all_costs, self.MPI.FLOAT])
+        self._comm.Allgather([local_cost, self._MPI.FLOAT], 
+                            [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
 
         self._update_centroid(all_costs, local_perturbation, perturbed_dimensions)
 
     def _update_centroid(self, all_costs, local_perturbation, perturbed_dimensions):
 
-        for parent_num, rank in enumerate(np.argsort(costs)):
+        for parent_num, rank in enumerate(np.argsort(all_costs)):
             if parent_num < self._num_parents:
                 if rank == self._rank:
                     local_perturbation *= self._weights[parent_num]
@@ -121,37 +118,37 @@ class BasicES():
         Plots the evolutionary history of the population's cost.
         Includes min cost individual for each generation the mean
         """
+        if self._rank == 0:
+            import matplotlib.pyplot as plt
 
-        import matplotlib.pyplot as plt
+            costs_by_generation = np.array(self._score_history)
+            min_cost_by_generation = \
+                np.min(costs_by_generation, axis=1)
+            mean_cost_by_generation = \
+                np.mean(costs_by_generation, axis=1)
 
-        costs_by_generation = np.array(self._score_history)
-        min_cost_by_generation = \
-            np.min(costs_by_generation, axis=1)
-        mean_cost_by_generation = \
-            np.mean(costs_by_generation, axis=1)
+            plt.plot(range(len(mean_cost_by_generation)), \
+                mean_cost_by_generation,
+                marker='None', ls='-', color='blue', label='mean cost')
 
-        plt.plot(range(len(mean_cost_by_generation)), \
-            mean_cost_by_generation,
-            marker='None', ls='-', color='blue', label='mean cost')
+            plt.plot(range(len(min_cost_by_generation)), \
+                min_cost_by_generation, ls='--', marker='None', \
+                color='red', label='best')
+            if logy:
+                plt.yscale('log')
+            plt.grid(True)
+            plt.xlabel('generation')
+            plt.ylabel('cost')
+            plt.legend(loc='upper right')
+            plt.tight_layout()
 
-        plt.plot(range(len(min_cost_by_generation)), \
-            min_cost_by_generation, ls='--', marker='None', \
-            color='red', label='best')
-        if logy:
-            plt.yscale('log')
-        plt.grid(True)
-        plt.xlabel('generation')
-        plt.ylabel('cost')
-        plt.legend(loc='upper right')
-        plt.tight_layout()
-
-        if savefile:
-            plt.savefig(prefix + "_evocost.png", dpi=300)
-            plt.close()
-            plt.clf()
-        else:
-            plt.show()
-            plt.clf()
+            if savefile:
+                plt.savefig(prefix + "_evocost.png", dpi=300)
+                plt.close()
+                plt.clf()
+            else:
+                plt.show()
+                plt.clf()
 
     @classmethod
     def load(cls, filename):
@@ -163,7 +160,7 @@ class BasicES():
 
     def save(self, filename):
 
-        if self._rank == 0 or self._rank == -1:
+        if self._rank == 0:
             pickled_obj_file = open(filename,'wb')
             try:
                 pickle.dump(self, pickled_obj_file, 2)
@@ -203,13 +200,11 @@ class RandNumTableES(BasicES):
         super().__init__(xo, step_size, **kwargs)
         self._rand_num_table_size = kwargs.get("rand_num_table_size", 20000000)
         self._rand_num_table = self._global_rng.randn(self._rand_num_table_size)
+        self._max_table_step = kwargs.get("max_table_step", 5)
+        self._max_param_step = kwargs.get("max_param_step", 1)
 
         # Fold step-size into table values
         self._rand_num_table *= self._step_size
-
-        # 1 added because max is excluded in randint
-        self._max_table_step = kwargs("max_table_step", 5) + 1
-        self._max_param_step = kwargs("max_param_step", 1) + 1
 
     def _draw_random_table_slices(self, rng):
         """
@@ -229,7 +224,7 @@ class RandNumTableES(BasicES):
         """
 
         return random_slices(rng, self._num_parameters, 
-                            self._num_mutations, self._max_table_step)
+                            self._num_mutations, self._max_param_step)
 
     def _update(self, objective):
 
@@ -243,7 +238,6 @@ class RandNumTableES(BasicES):
         dimension_slices, perturbation_slices = match_slices(
                                                     unmatched_dimension_slices, 
                                                     unmatched_perturbation_slices)
-
         # Apply perturbations
         multi_slice_add(self._centroid, self._rand_num_table,
                         dimension_slices, perturbation_slices)
@@ -254,12 +248,12 @@ class RandNumTableES(BasicES):
 
         # Consolidate return values
         all_costs = np.empty(self._size, dtype=np.float32)
-        self.comm.Allgather([local_cost, self.MPI.FLOAT], 
-                            [all_costs, self.MPI.FLOAT])
+        self._comm.Allgather([local_cost, self._MPI.FLOAT], 
+                            [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
 
         self._update_centroid(all_costs, unmatched_dimension_slices, 
-                                unmatched_perturbation_slices)
+                                dimension_slices, perturbation_slices)
 
     def _reconstruct_perturbation(self, rank, master_dim_slices, parent_num):
 
@@ -280,7 +274,7 @@ class RandNumTableES(BasicES):
         Adds an additional multiply opperation to avoid creating a new
         set of arrays for the slices. Not sure which would be faster
         """
-        for parent_num, rank in enumerate(np.argsort(costs)):
+        for parent_num, rank in enumerate(np.argsort(all_costs)):
             if parent_num < self._num_parents:
                 if rank == self._rank:
                     multi_slice_divide(self._old_centroid, self._weights[parent_num],
@@ -298,7 +292,7 @@ class RandNumTableES(BasicES):
                     self._draw_random_table_slices(self._worker_rngs[rank])
 
         multi_slice_assign(self._centroid, self._old_centroid, 
-                            perturbed_dimensions, perturbed_dimensions)
+                            master_dim_slices, master_dim_slices)
 
 class BoundedES(RandNumTableES):
     """
@@ -309,17 +303,23 @@ class BoundedES(RandNumTableES):
     def __init__(self, xo, step_size, bounds, **kwargs):
         super().__init__(xo, step_size, **kwargs)
 
-        self._boundary_type = kwargs("boundary_type", "clip")
+        self._boundary_type = kwargs.get("boundary_type", "clip")
         # Bounds is a 2D array with shape (num_params x 2) (low,high)
         self._bounds = np.array(bounds, dtype=np.float32)
         self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
         self._lower_bounds = self._bounds[:,0]
         self._upper_bounds = self._bounds[:,1]
 
+        # bound initial centroid
+        print("before ", self._centroid)
+        self._apply_bounds(self._centroid, [np.s_[:]])
+        print("after ", self._centroid)
+        self._old_centroid = self._centroid.copy()
+
     def _rescale_search_parameters(self, search_values, slice_list):
 
         multi_slice_multiply(search_values, self._parameter_scale,
-            slice_list)
+            slice_list, slice_list)
         multi_slice_add(search_values, self._lower_bounds, 
             slice_list, slice_list)
 
@@ -371,7 +371,9 @@ class BoundedES(RandNumTableES):
                         dimension_slices, perturbation_slices)
 
         # Apply bounds
+        print("before ", self._centroid)
         self._apply_bounds(self._centroid, dimension_slices)
+        print("after ", self._centroid)
 
         # Run objective
         local_cost = np.empty(1, dtype=np.float32)
@@ -379,12 +381,39 @@ class BoundedES(RandNumTableES):
 
         # Consolidate return values
         all_costs = np.empty(self._size, dtype=np.float32)
-        self.comm.Allgather([local_cost, self.MPI.FLOAT], 
-                            [all_costs, self.MPI.FLOAT])
+        self._comm.Allgather([local_cost, self._MPI.FLOAT], 
+                            [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
 
         self._update_centroid(all_costs, unmatched_dimension_slices, 
-                                unmatched_perturbation_slices)
+                                dimension_slices, perturbation_slices)
+
+    def _update_centroid(self, all_costs, master_dim_slices, local_dim_slices, local_perturbation_slices):
+        """
+        Adds an additional multiply opperation to avoid creating a new
+        set of arrays for the slices. Not sure which would be faster
+        """
+        for parent_num, rank in enumerate(np.argsort(all_costs)):
+            if parent_num < self._num_parents:
+                if rank == self._rank:
+                    multi_slice_divide(self._old_centroid, self._weights[parent_num],
+                        local_dim_slices)
+                    multi_slice_add(self._old_centroid, self._rand_num_table,
+                        local_dim_slices, local_perturbation_slices)
+                    multi_slice_multiply(self._old_centroid, self._weights[parent_num],
+                        local_dim_slices)
+
+                else:
+                    self._reconstruct_perturbation(rank, master_dim_slices, parent_num)
+
+            else:
+                if rank != self._rank:
+                    self._draw_random_table_slices(self._worker_rngs[rank])
+
+        # apply bounds in this window to prevent problems in next iteration
+        self._apply_bounds(self._old_centroid, master_dim_slices)
+        multi_slice_assign(self._centroid, self._old_centroid, 
+                            master_dim_slices, master_dim_slices)
 
 def multi_slice_add(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     """
@@ -569,6 +598,9 @@ def build_slices(start_step, iterator_size, slice_size, step_size):
     window. Upon reaching the endpoints of the iterator, it will wrap around.
     """
 
+    if step_size >= iterator_size:
+        raise NotImplementedError("Error: step size must be less than the"+
+            "size of the iterator")
     end_step = start_step + step_size * slice_size
     slices = []
     slice_start = start_step
@@ -654,27 +686,56 @@ def slice_size(slice_objs):
 
     return num_elements
 
+def elli(x):
+    """ellipsoid-like test cost function"""
+    n = len(x)
+    aratio = 1e3
+    return sum(x[i]**2 * aratio**(2.*i/(n-1)) for i in range(n))
+
+def sphere(x):
+    """sphere-like, ``sum(x**2)``, test cost function"""
+    return sum(x[i]**2 for i in range(len(x)))
+
+def rosenbrock(x):
+    """Rosenbrock-like test cost function"""
+    n = len(x)
+    if n < 2:
+        raise ValueError('dimension must be greater one')
+    return sum(100 * (x[i]**2 - x[i+1])**2 + (x[i] - 1)**2 
+        for i in range(n-1))
+
 if __name__ == '__main__':
     """test"""
-    sl1 = build_slices(7, 13, 10, 2)
-    sl2 = build_slices(0, 13, 10, 2)
-    print(sl1)
-    print(sl2)
-    new_sl1, new_sl2 = match_slices(sl1, sl2)
-    print()
-    print(new_sl1)
-    print(new_sl2)
+    # sl1 = build_slices(7, 13, 10, 2)
+    # sl2 = build_slices(0, 13, 10, 2)
+    # print(sl1)
+    # print(sl2)
+    # new_sl1, new_sl2 = match_slices(sl1, sl2)
+    # print()
+    # print(new_sl1)
+    # print(new_sl2)
 
-    for i in range(len(new_sl1)):
-        print(slice_size(new_sl1[i]), slice_size(new_sl2[i]))
-    print(slice_size(new_sl1), slice_size(new_sl2))
+    # for i in range(len(new_sl1)):
+    #     print(slice_size(new_sl1[i]), slice_size(new_sl2[i]))
+    # print(slice_size(new_sl1), slice_size(new_sl2))
 
-    a1 = np.arange(0, 13, 1)
-    a2 = 2*np.ones(13)
-    a3 = 5*np.ones(13)
-    print(a1)
-    print(a2)
-    print()
-    multi_slice_clip(a1, a2, a3, new_sl2, new_sl2, new_sl2)
-    print(a1)
-    print(a2)
+    # a1 = np.arange(0, 13, 1)
+    # a2 = 2*np.ones(13)
+    # a3 = 5*np.ones(13)
+    # print(a1)
+    # print(a2)
+    # print()
+    # multi_slice_clip(a1, a2, a3, new_sl2, new_sl2, new_sl2)
+    # print(a1)
+    # print(a2)
+
+    # print(build_slices(4, 5, 2, 6))
+
+    xo = np.array([-7.5 for i in range(10)])
+    bounds = [ (-5,5) for i in range(10) ]
+    es_test = BoundedES(xo, 0.1, bounds, boundary_type="periodic",
+        verbose=True, objective=sphere,
+        num_mutations=10, rand_num_table_size=200000, max_param_step=2,
+        max_table_step=10)
+    es_test(1)
+    es_test.plot_cost_over_time()
