@@ -174,92 +174,6 @@ class BasicES():
 
             pickled_obj_file.close()
 
-class BoundedES(RandNumTableES):
-    """
-    Currently support clipping and periodic bounds
-    boundary_type: "clip" or "periodic"
-    """
-
-    def __init__(self, xo, step_size, bounds, **kwargs):
-        super().__init__(xo, step_size, **kwargs)
-
-        self._boundary_type = kwargs("boundary_type", "clip")
-        # Bounds is a 2D array with shape (num_params x 2) (low,high)
-        self._bounds = np.array(bounds, dtype=np.float32)
-        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
-        self._lower_bounds = self._bounds[:,0]
-        self._upper_bounds = self._bounds[:,1]
-
-    def _rescale_search_parameters(self, search_values, slice_list):
-
-        multi_slice_multiply(search_values, self._parameter_scale,
-            slice_list)
-        multi_slice_add(search_values, self._lower_bounds, 
-            slice_list, slice_list)
-
-    def _periodic_search_parameters(self, search_values, slice_list):
-
-        multi_slice_mod(search_values, 2, slice_list)
-        multi_slice_subtract(search_values, 1, slice_list)
-        multi_slice_fabs(search_values, slice_list)
-        multi_slice_multiply(search_values, -1, slice_list)
-        multi_slice_add(search_values, 1, slice_list)
-
-    def _apply_periodic_bounds(self, search_values, slice_list):
-        """
-        Rescales the parameters using periodic boundary conditions. 
-        By default the search parameter space is bound between 0 and 1.
-        """
-
-        self._periodic_search_parameters(search_values, slice_list)
-        self._rescale_search_parameters(search_values, slice_list)
-
-    def _apply_bounds(self, search_values, slice_list):
-
-        if self._boundary_type == "clip":
-            multi_slice_clip(search_values, self._lower_bounds, 
-                self._upper_bounds, slice_list, slice_list, slice_list)
-
-        elif self._boundary_type == "periodic":
-            self._apply_periodic_bounds(search_values, slice_list)
-
-        else:
-            raise NotImplementedError("Error: " + self._boundary_type + 
-                                      " not implemented")
-
-    def _update(self, objective):
-
-        # Perturb centroid
-        unmatched_dimension_slices = self._draw_random_parameter_slices(
-                                            self._global_rng)
-        unmatched_perturbation_slices = self._draw_random_table_slices(
-                                            self._worker_rngs[self._rank])
-
-        # Match slices against each other
-        dimension_slices, perturbation_slices = match_slices(
-                                                    unmatched_dimension_slices, 
-                                                    unmatched_perturbation_slices)
-
-        # Apply perturbations
-        multi_slice_add(self._centroid, self._rand_num_table,
-                        dimension_slices, perturbation_slices)
-
-        # Apply bounds
-        self._apply_bounds(self._centroid, dimension_slices)
-
-        # Run objective
-        local_cost = np.empty(1, dtype=np.float32)
-        local_cost[0] = objective(self._centroid)
-
-        # Consolidate return values
-        all_costs = np.empty(self._size, dtype=np.float32)
-        self.comm.Allgather([local_cost, self.MPI.FLOAT], 
-                            [all_costs, self.MPI.FLOAT])
-        self._update_log(all_costs)
-
-        self._update_centroid(all_costs, unmatched_dimension_slices, 
-                                unmatched_perturbation_slices)
-
 class RandNumTableES(BasicES):
     """
     Creates a large RN table
@@ -386,6 +300,92 @@ class RandNumTableES(BasicES):
         multi_slice_assign(self._centroid, self._old_centroid, 
                             perturbed_dimensions, perturbed_dimensions)
 
+class BoundedES(RandNumTableES):
+    """
+    Currently support clipping and periodic bounds
+    boundary_type: "clip" or "periodic"
+    """
+
+    def __init__(self, xo, step_size, bounds, **kwargs):
+        super().__init__(xo, step_size, **kwargs)
+
+        self._boundary_type = kwargs("boundary_type", "clip")
+        # Bounds is a 2D array with shape (num_params x 2) (low,high)
+        self._bounds = np.array(bounds, dtype=np.float32)
+        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
+        self._lower_bounds = self._bounds[:,0]
+        self._upper_bounds = self._bounds[:,1]
+
+    def _rescale_search_parameters(self, search_values, slice_list):
+
+        multi_slice_multiply(search_values, self._parameter_scale,
+            slice_list)
+        multi_slice_add(search_values, self._lower_bounds, 
+            slice_list, slice_list)
+
+    def _periodic_search_parameters(self, search_values, slice_list):
+
+        multi_slice_mod(search_values, 2, slice_list)
+        multi_slice_subtract(search_values, 1, slice_list)
+        multi_slice_fabs(search_values, slice_list)
+        multi_slice_multiply(search_values, -1, slice_list)
+        multi_slice_add(search_values, 1, slice_list)
+
+    def _apply_periodic_bounds(self, search_values, slice_list):
+        """
+        Rescales the parameters using periodic boundary conditions. 
+        By default the search parameter space is bound between 0 and 1.
+        """
+
+        self._periodic_search_parameters(search_values, slice_list)
+        self._rescale_search_parameters(search_values, slice_list)
+
+    def _apply_bounds(self, search_values, slice_list):
+
+        if self._boundary_type == "clip":
+            multi_slice_clip(search_values, self._lower_bounds, 
+                self._upper_bounds, slice_list, slice_list, slice_list)
+
+        elif self._boundary_type == "periodic":
+            self._apply_periodic_bounds(search_values, slice_list)
+
+        else:
+            raise NotImplementedError("Error: " + self._boundary_type + 
+                                      " not implemented")
+
+    def _update(self, objective):
+
+        # Perturb centroid
+        unmatched_dimension_slices = self._draw_random_parameter_slices(
+                                            self._global_rng)
+        unmatched_perturbation_slices = self._draw_random_table_slices(
+                                            self._worker_rngs[self._rank])
+
+        # Match slices against each other
+        dimension_slices, perturbation_slices = match_slices(
+                                                    unmatched_dimension_slices, 
+                                                    unmatched_perturbation_slices)
+
+        # Apply perturbations
+        multi_slice_add(self._centroid, self._rand_num_table,
+                        dimension_slices, perturbation_slices)
+
+        # Apply bounds
+        self._apply_bounds(self._centroid, dimension_slices)
+
+        # Run objective
+        local_cost = np.empty(1, dtype=np.float32)
+        local_cost[0] = objective(self._centroid)
+
+        # Consolidate return values
+        all_costs = np.empty(self._size, dtype=np.float32)
+        self.comm.Allgather([local_cost, self.MPI.FLOAT], 
+                            [all_costs, self.MPI.FLOAT])
+        self._update_log(all_costs)
+
+        self._update_centroid(all_costs, unmatched_dimension_slices, 
+                                unmatched_perturbation_slices)
+
 def multi_slice_add(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     """
     Does an inplace addition on x1 given a list of slice objects
@@ -393,19 +393,18 @@ def multi_slice_add(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     the same size and each slice will have the same # of elements
     """
 
-    if (len(x1_slices) == 0) and (len(x2_slices) != 0):
-        for x2_slice in x2_slices:
-            x1_inplace += x2[x2_slice]
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) == 0):
+    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
         for x1_slice in x1_slices:
             x1_inplace[x1_slice] += x2
 
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) 
+    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
             and (len(x2_slices) == len(x1_slices)):
 
         for i in range(len(x1_slices)):
             x1_inplace[x1_slices[i]] += x2[x2_slices[i]]
+
+    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
+        x1_inplace += x2
 
 def multi_slice_subtract(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     """
@@ -414,19 +413,18 @@ def multi_slice_subtract(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     the same size and each slice will have the same # of elements
     """
 
-    if (len(x1_slices) == 0) and (len(x2_slices) != 0):
-        for x2_slice in x2_slices:
-            x1_inplace -= x2[x2_slice]
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) == 0):
+    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
         for x1_slice in x1_slices:
             x1_inplace[x1_slice] -= x2
 
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) 
+    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
             and (len(x2_slices) == len(x1_slices)):
 
         for i in range(len(x1_slices)):
             x1_inplace[x1_slices[i]] -= x2[x2_slices[i]]
+
+    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
+        x1_inplace -= x2
 
 def multi_slice_multiply(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     """
@@ -435,19 +433,18 @@ def multi_slice_multiply(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     the same size and each slice will have the same # of elements
     """
 
-    if (len(x1_slices) == 0) and (len(x2_slices) != 0):
-        for x2_slice in x2_slices:
-            x1_inplace *= x2[x2_slice]
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) == 0):
+    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
         for x1_slice in x1_slices:
             x1_inplace[x1_slice] *= x2
 
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) 
+    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
             and (len(x2_slices) == len(x1_slices)):
 
         for i in range(len(x1_slices)):
             x1_inplace[x1_slices[i]] *= x2[x2_slices[i]]
+
+    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
+        x1_inplace *= x2
 
 def multi_slice_divide(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     """
@@ -456,19 +453,18 @@ def multi_slice_divide(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     the same size and each slice will have the same # of elements
     """
 
-    if (len(x1_slices) == 0) and (len(x2_slices) != 0):
-        for x2_slice in x2_slices:
-            x1_inplace /= x2[x2_slice]
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) == 0):
+    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
         for x1_slice in x1_slices:
             x1_inplace[x1_slice] /= x2
 
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) 
+    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
             and (len(x2_slices) == len(x1_slices)):
 
         for i in range(len(x1_slices)):
             x1_inplace[x1_slices[i]] /= x2[x2_slices[i]]
+
+    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
+        x1_inplace /= x2
 
 def multi_slice_assign(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     """
@@ -477,19 +473,18 @@ def multi_slice_assign(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     the same size and each slice will have the same # of elements
     """
 
-    if (len(x1_slices) == 0) and (len(x2_slices) != 0):
-        for x2_slice in x2_slices:
-            x1_inplace = x2[x2_slice]
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) == 0):
+    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
         for x1_slice in x1_slices:
             x1_inplace[x1_slice] = x2
 
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) 
+    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
             and (len(x2_slices) == len(x1_slices)):
 
         for i in range(len(x1_slices)):
             x1_inplace[x1_slices[i]] = x2[x2_slices[i]]
+
+    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
+        x1_inplace = x2
 
 def multi_slice_mod(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     """
@@ -498,40 +493,48 @@ def multi_slice_mod(x1_inplace, x2, x1_slices=[], x2_slices=[]):
     the same size and each slice will have the same # of elements
     """
 
-    if (len(x1_slices) == 0) and (len(x2_slices) != 0):
-        for x2_slice in x2_slices:
-            x1_inplace %= x2[x2_slice]
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) == 0):
+    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
         for x1_slice in x1_slices:
             x1_inplace[x1_slice] %= x2
 
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) 
+    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
             and (len(x2_slices) == len(x1_slices)):
 
         for i in range(len(x1_slices)):
             x1_inplace[x1_slices[i]] %= x2[x2_slices[i]]
+
+    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
+        x1_inplace %= x2
 
 def multi_slice_fabs(x1_inplace, x1_slices=[]):
     """
     Does an inplace fabs on x1 given a list of slice objects
     """
 
-    for x1_slice in x1_slices:
-        np.fabs(x1_inplace, out=x1_inplace[x1_slice])
+    if (len(x1_slices) != 0):
+        for x1_slice in x1_slices:
+            np.fabs(x1_inplace[x1_slice], out=x1_inplace[x1_slice])
 
-def multi_slice_clip(x1_inplace, lower, upper, slices, lslices=[], uslices=[]):
+    else:
+        np.fabs(x1_inplace, out=x1_inplace)
+
+def multi_slice_clip(x1_inplace, lower, upper, xslices, lslices=[], uslices=[]):
     """
     Does an inplace clip on x1
     """
 
     if (len(lslices) == 0) or (len(uslices) == 0):
-        np.clip(x1_inplace[xslices], lower, upper, out=x1_inplace[xslices])
+        for xslice in xslices:
+            np.clip(x1_inplace[xslice], lower, upper, out=x1_inplace[xslice])
 
-    elif (len(lslices) != 0) and (len(uslices) != 0)
+    elif (len(lslices) != 0) and (len(uslices) != 0) \
             and (len(lslices) == len(uslices)):
-        np.clip(x1_inplace[xslices], lower[lslices], upper[uslices],
-            out=x1_inplace[xslices])
+        for i in range(len(xslices)):
+            np.clip(x1_inplace[xslices[i]], lower[lslices[i]], upper[uslices[i]],
+                out=x1_inplace[xslices[i]])
+
+    elif (len(lslices) == 0) and (len(uslices) == 0) and (len(xslices) == 0):
+        np.clip(x1_inplace, lower, upper, out=x1_inplace)
 
     else:
         raise NotImplementedError("Invalid arguments in multi_slice_clip")
@@ -665,3 +668,13 @@ if __name__ == '__main__':
     for i in range(len(new_sl1)):
         print(slice_size(new_sl1[i]), slice_size(new_sl2[i]))
     print(slice_size(new_sl1), slice_size(new_sl2))
+
+    a1 = np.arange(0, 13, 1)
+    a2 = 2*np.ones(13)
+    a3 = 5*np.ones(13)
+    print(a1)
+    print(a2)
+    print()
+    multi_slice_clip(a1, a2, a3, new_sl2, new_sl2, new_sl2)
+    print(a1)
+    print(a2)
