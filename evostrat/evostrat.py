@@ -50,15 +50,15 @@ class BasicES():
         self._centroid = np.array(xo, dtype=np.float32)
         self._old_centroid = self._centroid.copy()
 
-    def __call__(self, num_iterations, objective_funct=None, args=()):
+    def __call__(self, num_iterations, objective=None, args=()):
 
-        if (self.objective != None) and (objective_funct == None):
-            objective_funct = self.objective
+        if (self.objective != None) and (objective == None):
+            objective = self.objective
             args = self.obj_args
-        elif (self.objective == None) and (objective_funct == None):
+        elif (self.objective == None) and (objective == None):
             raise AttributeError("Error: No objective defined")
         
-        partial_objective = partial(objective_funct, *args)
+        partial_objective = partial(objective, *args)
         for i in range(num_iterations):
             if self._verbose and (self._rank == 0):
                 print("Generation:", self._generation_number)
@@ -159,17 +159,47 @@ class BasicES():
         return obj
 
     def save(self, filename):
-
+        """
+        objectives and their args are not saved with the ES
+        """
         if self._rank == 0:
             pickled_obj_file = open(filename,'wb')
-            try:
-                pickle.dump(self, pickled_obj_file, 2)
-            except TypeError:
-                print("Can't pickle objective, setting to None")
-                self.objective = None
-                pickle.dump(self, pickled_obj_file, 2)
-
+            pickle.dump(self, pickled_obj_file, 2)
             pickled_obj_file.close()
+
+    def __getstate__(self):
+
+        state = {"_step_size" : self._step_size,
+                "_num_parameters": self._num_parameters,
+                "_num_mutations": self._num_mutations,
+                "_num_parents": self._num_parents,
+                "_verbose": self._verbose,
+                "_global_seed": self._global_seed,
+                "_weights": self._weights,
+                "_global_rng": self._global_rng,
+                "_seed_set": self._seed_set,
+                "_worker_rngs": self._worker_rngs,
+                "_generation_number": self._generation_number,
+                "_score_history": self._score_history,
+                "_centroid": self._centroid}
+
+        return state
+
+    def __setstate__(self, state):
+
+        for key in state:
+            setattr(self, key, state[key])
+
+        # Reconstruct larger structures and load MPI
+        self._par_choices = np.arange(0, self._num_parameters, dtype=np.int32)
+        self._old_centroid = self._centroid.copy()
+        from mpi4py import MPI
+        self._MPI = MPI
+        self._comm = MPI.COMM_WORLD
+        self._size = self._comm.Get_size()
+        self._rank = self._comm.Get_rank()
+        self.objective = None
+        self.obj_args = tuple()
 
 class BasicBoundedES(BasicES):
 
@@ -222,6 +252,25 @@ class BasicBoundedES(BasicES):
 
         self._update_centroid(all_costs, local_perturbation, perturbed_dimensions)
 
+    def __getstate__(self):
+        state = super().__getstate__()
+        addition_states = {"_boundary_type": self._boundary_type,
+                           "_bounds": self._bounds}
+        state.update(addition_states)
+
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+
+        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
+        self._lower_bounds = self._bounds[:,0]
+        self._upper_bounds = self._bounds[:,1]
+
+        # bound initial centroid
+        self._apply_bounds(self._centroid)
+        self._old_centroid = self._centroid.copy()
+
 class RandNumTableES(BasicES):
     """
     Creates a large RN table
@@ -259,6 +308,21 @@ class RandNumTableES(BasicES):
         self._max_param_step = kwargs.get("max_param_step", 1)
 
         # Fold step-size into table values
+        self._rand_num_table *= self._step_size
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        addition_states = {"_rand_num_table_size": self._rand_num_table_size,
+                           "_max_table_step": self._max_table_step,
+                           "_max_param_step": self._max_param_step}
+        state.update(addition_states)
+
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+
+        self._rand_num_table = self._global_rng.randn(self._rand_num_table_size)
         self._rand_num_table *= self._step_size
 
     def _draw_random_table_slices(self, rng):
@@ -367,6 +431,25 @@ class BoundedES(RandNumTableES):
         self._boundary_type = kwargs.get("boundary_type", "clip")
         # Bounds is a 2D array with shape (num_params x 2) (low,high)
         self._bounds = np.array(bounds, dtype=np.float32)
+        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
+        self._lower_bounds = self._bounds[:,0]
+        self._upper_bounds = self._bounds[:,1]
+
+        # bound initial centroid
+        self._apply_bounds(self._centroid, [np.s_[:]])
+        self._old_centroid = self._centroid.copy()
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        addition_states = {"_boundary_type": self._boundary_type,
+                           "_bounds": self._bounds}
+        state.update(addition_states)
+
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+
         self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
         self._lower_bounds = self._bounds[:,0]
         self._upper_bounds = self._bounds[:,1]
@@ -771,6 +854,7 @@ def rosenbrock(x):
 
 if __name__ == '__main__':
     """test"""
+    pass
     # sl1 = build_slices(7, 13, 10, 2)
     # sl2 = build_slices(0, 13, 10, 2)
     # print(sl1)
@@ -796,11 +880,13 @@ if __name__ == '__main__':
 
     # print(build_slices(4, 5, 2, 6))
 
-    xo = np.array([-8. for i in range(10)])
-    bounds = [ (-5,5) for i in range(10) ]
-    es_test = BasicBoundedES(xo, 0.1, bounds, boundary_type="clip",
-        verbose=True, objective=sphere,
-        num_mutations=10, rand_num_table_size=200000, max_param_step=1,
-        max_table_step=10)
-    es_test(100)
-    es_test.plot_cost_over_time()
+    # xo = np.array([0.5 for i in range(10)])
+    # bounds = [ (-1.0,5.0) for i in range(2) ] + [ (0.01,5) for i in range(8) ]
+    # es_test = BoundedES(xo, 0.1, bounds, verbose=True, objective=sphere)
+    # es_test(100)
+    # es_test.plot_cost_over_time()
+    # es_test.save("test.cmaes")
+
+    # es_test = BoundedES.load("test.cmaes")
+    # es_test(100, objective=sphere)
+    # es_test.plot_cost_over_time()
