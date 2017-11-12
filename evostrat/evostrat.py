@@ -192,6 +192,10 @@ class RandNumTableES(BasicES):
     if the step is too large you risk overlapping old values as it wraps around
     the arrays.
 
+    WARNING: If the # mutations approaches # parameters, make sure that the
+    max_param_step == 1, else overlapping will cause actual # mutations to be
+    less than the desired value.
+
     Currently, the global_rng draws perturbed dimensions for each iteration
     This could be changed to let workers draw their own dimensions to perturb
     """
@@ -297,7 +301,13 @@ class RandNumTableES(BasicES):
 class BoundedES(RandNumTableES):
     """
     Currently support clipping and periodic bounds
-    boundary_type: "clip" or "periodic"
+    boundary_type: "clip"
+
+    *note: periodic is troublesome to implement due to the variable
+    windows at each iteration and the need to rescale the entire array
+    rather than a subset. This is because the search needs to happen in the 
+    folded real space (which gets folded onto (0,1)), but the objective needs 
+    the rescaled space.
     """
 
     def __init__(self, xo, step_size, bounds, **kwargs):
@@ -311,20 +321,26 @@ class BoundedES(RandNumTableES):
         self._upper_bounds = self._bounds[:,1]
 
         # bound initial centroid
-        print("before ", self._centroid)
         self._apply_bounds(self._centroid, [np.s_[:]])
-        print("after ", self._centroid)
+        self._apply_bounds(self._centroid, [np.s_[:]])
         self._old_centroid = self._centroid.copy()
 
     def _rescale_search_parameters(self, search_values, slice_list):
-
+        """
+        Assuming values are in the range (0,1) this function rescales
+        the parameters to their desired range
+        """
         multi_slice_multiply(search_values, self._parameter_scale,
             slice_list, slice_list)
         multi_slice_add(search_values, self._lower_bounds, 
             slice_list, slice_list)
 
     def _periodic_search_parameters(self, search_values, slice_list):
-
+        """
+        Places the parameters in a range between (0,1). When
+        values exceed the range they are wrapped around back between that
+        range. E.g. 1.5 -> 0.5, -1 -> 1, -2 -> 0, etc
+        """
         multi_slice_mod(search_values, 2, slice_list)
         multi_slice_subtract(search_values, 1, slice_list)
         multi_slice_fabs(search_values, slice_list)
@@ -345,9 +361,6 @@ class BoundedES(RandNumTableES):
         if self._boundary_type == "clip":
             multi_slice_clip(search_values, self._lower_bounds, 
                 self._upper_bounds, slice_list, slice_list, slice_list)
-
-        elif self._boundary_type == "periodic":
-            self._apply_periodic_bounds(search_values, slice_list)
 
         else:
             raise NotImplementedError("Error: " + self._boundary_type + 
@@ -371,9 +384,7 @@ class BoundedES(RandNumTableES):
                         dimension_slices, perturbation_slices)
 
         # Apply bounds
-        print("before ", self._centroid)
         self._apply_bounds(self._centroid, dimension_slices)
-        print("after ", self._centroid)
 
         # Run objective
         local_cost = np.empty(1, dtype=np.float32)
@@ -392,6 +403,10 @@ class BoundedES(RandNumTableES):
         """
         Adds an additional multiply opperation to avoid creating a new
         set of arrays for the slices. Not sure which would be faster
+
+        Boundaries are clipped again at the end, to make sure the parameters in
+        this window are fit for the objective in the next iteration (which will
+        only clip params in the new window).
         """
         for parent_num, rank in enumerate(np.argsort(all_costs)):
             if parent_num < self._num_parents:
@@ -731,11 +746,11 @@ if __name__ == '__main__':
 
     # print(build_slices(4, 5, 2, 6))
 
-    xo = np.array([-7.5 for i in range(10)])
+    xo = np.array([-8. for i in range(10)])
     bounds = [ (-5,5) for i in range(10) ]
-    es_test = BoundedES(xo, 0.1, bounds, boundary_type="periodic",
+    es_test = BoundedES(xo, 0.1, bounds, boundary_type="clip",
         verbose=True, objective=sphere,
-        num_mutations=10, rand_num_table_size=200000, max_param_step=2,
+        num_mutations=10, rand_num_table_size=200000, max_param_step=1,
         max_table_step=10)
-    es_test(1)
+    es_test(100)
     es_test.plot_cost_over_time()
