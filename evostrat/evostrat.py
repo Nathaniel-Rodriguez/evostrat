@@ -171,6 +171,57 @@ class BasicES():
 
             pickled_obj_file.close()
 
+class BasicBoundedES(BasicES):
+
+    def __init__(self, xo, step_size, bounds, **kwargs):
+        super().__init__(xo, step_size, **kwargs)
+
+        self._boundary_type = kwargs.get("boundary_type", "clip")
+        # Bounds is a 2D array with shape (num_params x 2) (low,high)
+        self._bounds = np.array(bounds, dtype=np.float32)
+        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
+        self._lower_bounds = self._bounds[:,0]
+        self._upper_bounds = self._bounds[:,1]
+
+        # bound initial centroid
+        self._apply_bounds(self._centroid)
+        self._old_centroid = self._centroid.copy()
+
+    def _apply_bounds(self, search_values):
+
+        if self._boundary_type == "clip":
+            np.clip(search_values, self._lower_bounds, self._upper_bounds,
+                out=search_values)
+
+        else:
+            raise NotImplementedError("Error: " + self._boundary_type + 
+                                      " not implemented")
+
+    def _update(self, objective):
+
+        # Perturb centroid
+        perturbed_dimensions = self._global_rng.choice(self._par_choices,
+                                    size=self._num_mutations, replace=False)
+        local_perturbation = self._worker_rngs[self._rank].randn(
+                            self._num_mutations)
+        local_perturbation *= self._step_size
+        self._centroid[perturbed_dimensions] += local_perturbation
+
+        # Apply bounds
+        self._apply_bounds(self._centroid)
+
+        # Run objective
+        local_cost = np.empty(1, dtype=np.float32)
+        local_cost[0] = objective(self._centroid)
+
+        # Consolidate return values
+        all_costs = np.empty(self._size, dtype=np.float32)
+        self._comm.Allgather([local_cost, self._MPI.FLOAT], 
+                            [all_costs, self._MPI.FLOAT])
+        self._update_log(all_costs)
+
+        self._update_centroid(all_costs, local_perturbation, perturbed_dimensions)
+
 class RandNumTableES(BasicES):
     """
     Creates a large RN table
@@ -321,7 +372,6 @@ class BoundedES(RandNumTableES):
         self._upper_bounds = self._bounds[:,1]
 
         # bound initial centroid
-        self._apply_bounds(self._centroid, [np.s_[:]])
         self._apply_bounds(self._centroid, [np.s_[:]])
         self._old_centroid = self._centroid.copy()
 
@@ -748,7 +798,7 @@ if __name__ == '__main__':
 
     xo = np.array([-8. for i in range(10)])
     bounds = [ (-5,5) for i in range(10) ]
-    es_test = BoundedES(xo, 0.1, bounds, boundary_type="clip",
+    es_test = BasicBoundedES(xo, 0.1, bounds, boundary_type="clip",
         verbose=True, objective=sphere,
         num_mutations=10, rand_num_table_size=200000, max_param_step=1,
         max_table_step=10)
