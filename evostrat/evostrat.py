@@ -1,6 +1,35 @@
+"""
+These classes implement simple evolutionary strategies for distribution over
+a large cluster using MPI (mpi4py). It is very efficient and scales to 
+millions of parameters. It uses numpy float32 types to reduce memory consumption
+and relies heavily on numpy vectorization.
+
+Even for many millions of parameters the total compute time of the ES amounts
+only to a few minutes of total wall-time. Even for quickly evaluated fitness
+functions the ES will likely only amount to a small portion of total wall-time.
+
+The BasicES and BasicBoundedES are less efficient as they draw new random
+values each iteration. The RandNumTableES and BoundedES use large static
+tables of random numbers, only drawing slices each iteration, allowing a
+10X+ speedup. Make sure to adjust table size to fit within the memory of each
+node. If a node has 64GB and 32 ranks, then make sure to allocate less than
+(64GB / 32) GB of RNG table memory (minus 32*size_of_parameters).
+
+Additionally, all operations in RandNumTableES/BoundedES are done in-place, 
+so no intermediate arrays are allocated. BasicES/BasicBoundedES have to
+generate new random numbers so array allocation has to occur each iteration.
+
+In order to smooth out correlations in RNG draws, different strides are randomly
+drawn, and different sets of parameters can be selected each iteration for
+mutation. So long as Table >> #pars it is unlikely to effect the ES.
+Even a 20M table with 1M parameters doesn't inhibit ES progress.
+
+If you subclass these ES, make sure any arithmetic you do uses dtype=float32 to
+prevent time lost with type conversions.
+"""
+
 import numpy as np
 import pickle
-import math
 from functools import partial
 
 class BasicES():
@@ -23,7 +52,7 @@ class BasicES():
         # User input parameters
         self.objective = kwargs.get('objective', None)
         self.obj_args = kwargs.get('obj_args', ())
-        self._step_size = step_size
+        self._step_size = np.float32(step_size)
         self._num_parameters = len(xo)
         self._num_mutations = kwargs.get('num_mutations', self._num_parameters)
         self._num_parents = kwargs.get('num_parents', int(self._size / 2))
