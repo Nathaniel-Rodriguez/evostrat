@@ -1,38 +1,10 @@
-"""
-These classes implement simple evolutionary strategies for distribution over
-a large cluster using MPI (mpi4py). It is very efficient and scales to 
-millions of parameters. It uses numpy float32 types to reduce memory consumption
-and relies heavily on numpy vectorization.
-
-Even for many millions of parameters the total compute time of the ES amounts
-only to a few minutes of total wall-time. Even for quickly evaluated fitness
-functions the ES will likely only amount to a small portion of total wall-time.
-
-The BasicES and BasicBoundedES are less efficient as they draw new random
-values each iteration. The RandNumTableES and BoundedES use large static
-tables of random numbers, only drawing slices each iteration, allowing a
-10X+ speedup. Make sure to adjust table size to fit within the memory of each
-node. If a node has 64GB and 32 ranks, then make sure to allocate less than
-(64GB / 32) GB of RNG table memory (minus 32*size_of_parameters).
-
-Additionally, all operations in RandNumTableES/BoundedES are done in-place, 
-so no intermediate arrays are allocated. BasicES/BasicBoundedES have to
-generate new random numbers so array allocation has to occur each iteration.
-
-In order to smooth out correlations in RNG draws, different strides are randomly
-drawn, and different sets of parameters can be selected each iteration for
-mutation. So long as Table >> #pars it is unlikely to effect the ES.
-Even a 20M table with 1M parameters doesn't inhibit ES progress.
-
-If you subclass these ES, make sure any arithmetic you do uses dtype=float32 to
-prevent time lost with type conversions.
-"""
-
 import numpy as np
 import pickle
 from functools import partial
+from .sliceops import *
 
-class BasicES():
+
+class BasicES:
 
     def __init__(self, xo, step_size, **kwargs):
         """
@@ -60,17 +32,17 @@ class BasicES():
         self._global_seed = kwargs.get('seed', 1)
 
         # Internal parameters
-        self._weights = np.log(self._num_parents + 0.5) - \
-                        np.log(np.arange(1, self._num_parents + 1))
+        self._weights = np.log(self._num_parents + 0.5) - np.log(
+            np.arange(1, self._num_parents + 1))
         self._weights /= np.sum(self._weights)
         self._weights.astype(np.float32, copy=False)
 
         # Internal data
         self._global_rng = np.random.RandomState(self._global_seed)
-        self._seed_set = self._global_rng.choice(1000000, size=self._size, 
-                                                replace=False)
-        self._worker_rngs = [ np.random.RandomState(seed) 
-                                for seed in self._seed_set ]
+        self._seed_set = self._global_rng.choice(1000000, size=self._size,
+                                                 replace=False)
+        self._worker_rngs = [np.random.RandomState(seed)
+                             for seed in self._seed_set]
         self._par_choices = np.arange(0, self._num_parameters, dtype=np.int32)
         self._generation_number = 0
         self._score_history = []
@@ -81,12 +53,12 @@ class BasicES():
 
     def __call__(self, num_iterations, objective=None, args=()):
 
-        if (self.objective != None) and (objective == None):
+        if (self.objective is not None) and (objective is None):
             objective = self.objective
             args = self.obj_args
-        elif (self.objective == None) and (objective == None):
+        elif (self.objective is None) and (objective is not None):
             raise AttributeError("Error: No objective defined")
-        
+
         partial_objective = partial(objective, *args)
         for i in range(num_iterations):
             if self._verbose and (self._rank == 0):
@@ -98,9 +70,10 @@ class BasicES():
 
         # Perturb centroid
         perturbed_dimensions = self._global_rng.choice(self._par_choices,
-                                    size=self._num_mutations, replace=False)
+                                                       size=self._num_mutations,
+                                                       replace=False)
         local_perturbation = self._worker_rngs[self._rank].randn(
-                            self._num_mutations)
+            self._num_mutations)
         local_perturbation *= self._step_size
         self._centroid[perturbed_dimensions] += local_perturbation
 
@@ -110,8 +83,8 @@ class BasicES():
 
         # Consolidate return values
         all_costs = np.empty(self._size, dtype=np.float32)
-        self._comm.Allgather([local_cost, self._MPI.FLOAT], 
-                            [all_costs, self._MPI.FLOAT])
+        self._comm.Allgather([local_cost, self._MPI.FLOAT],
+                             [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
 
         self._update_centroid(all_costs, local_perturbation, perturbed_dimensions)
@@ -125,14 +98,14 @@ class BasicES():
                     self._old_centroid[perturbed_dimensions] += local_perturbation
                 else:
                     perturbation = self._worker_rngs[rank].randn(
-                                    self._num_mutations)
+                        self._num_mutations)
                     perturbation *= self._weights[parent_num] * self._step_size
                     self._old_centroid[perturbed_dimensions] += perturbation
             else:
                 if rank != self._rank:
                     self._worker_rngs[rank].randn(self._num_mutations)
 
-        self._centroid[perturbed_dimensions] = self._old_centroid[perturbed_dimensions] #care, copies old_cent
+        self._centroid[perturbed_dimensions] = self._old_centroid[perturbed_dimensions]
 
     def _update_log(self, costs):
 
@@ -156,13 +129,13 @@ class BasicES():
             mean_cost_by_generation = \
                 np.mean(costs_by_generation, axis=1)
 
-            plt.plot(range(len(mean_cost_by_generation)), \
-                mean_cost_by_generation,
-                marker='None', ls='-', color='blue', label='mean cost')
+            plt.plot(range(len(mean_cost_by_generation)),
+                     mean_cost_by_generation,
+                     marker='None', ls='-', color='blue', label='mean cost')
 
-            plt.plot(range(len(min_cost_by_generation)), \
-                min_cost_by_generation, ls='--', marker='None', \
-                color='red', label='best')
+            plt.plot(range(len(min_cost_by_generation)),
+                     min_cost_by_generation, ls='--', marker='None',
+                     color='red', label='best')
             if logy:
                 plt.yscale('log')
             plt.grid(True)
@@ -181,7 +154,7 @@ class BasicES():
 
     @classmethod
     def load(cls, filename):
-        pickled_obj_file = open(filename,'rb')
+        pickled_obj_file = open(filename, 'rb')
         obj = pickle.load(pickled_obj_file)
         pickled_obj_file.close()
 
@@ -192,25 +165,25 @@ class BasicES():
         objectives and their args are not saved with the ES
         """
         if self._rank == 0:
-            pickled_obj_file = open(filename,'wb')
+            pickled_obj_file = open(filename, 'wb')
             pickle.dump(self, pickled_obj_file, 2)
             pickled_obj_file.close()
 
     def __getstate__(self):
 
-        state = {"_step_size" : self._step_size,
-                "_num_parameters": self._num_parameters,
-                "_num_mutations": self._num_mutations,
-                "_num_parents": self._num_parents,
-                "_verbose": self._verbose,
-                "_global_seed": self._global_seed,
-                "_weights": self._weights,
-                "_global_rng": self._global_rng,
-                "_seed_set": self._seed_set,
-                "_worker_rngs": self._worker_rngs,
-                "_generation_number": self._generation_number,
-                "_score_history": self._score_history,
-                "_centroid": self._centroid}
+        state = {"_step_size": self._step_size,
+                 "_num_parameters": self._num_parameters,
+                 "_num_mutations": self._num_mutations,
+                 "_num_parents": self._num_parents,
+                 "_verbose": self._verbose,
+                 "_global_seed": self._global_seed,
+                 "_weights": self._weights,
+                 "_global_rng": self._global_rng,
+                 "_seed_set": self._seed_set,
+                 "_worker_rngs": self._worker_rngs,
+                 "_generation_number": self._generation_number,
+                 "_score_history": self._score_history,
+                 "_centroid": self._centroid}
 
         return state
 
@@ -230,7 +203,8 @@ class BasicES():
         self.objective = None
         self.obj_args = tuple()
 
-class BasicBoundedES(BasicES):
+
+class BoundedBasicES(BasicES):
 
     def __init__(self, xo, step_size, bounds, **kwargs):
         super().__init__(xo, step_size, **kwargs)
@@ -238,9 +212,9 @@ class BasicBoundedES(BasicES):
         self._boundary_type = kwargs.get("boundary_type", "clip")
         # Bounds is a 2D array with shape (num_params x 2) (low,high)
         self._bounds = np.array(bounds, dtype=np.float32)
-        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
-        self._lower_bounds = self._bounds[:,0]
-        self._upper_bounds = self._bounds[:,1]
+        self._parameter_scale = (self._bounds[:, 1] - self._bounds[:, 0]) / 1.
+        self._lower_bounds = self._bounds[:, 0]
+        self._upper_bounds = self._bounds[:, 1]
 
         # bound initial centroid
         self._apply_bounds(self._centroid)
@@ -250,19 +224,20 @@ class BasicBoundedES(BasicES):
 
         if self._boundary_type == "clip":
             np.clip(search_values, self._lower_bounds, self._upper_bounds,
-                out=search_values)
+                    out=search_values)
 
         else:
-            raise NotImplementedError("Error: " + self._boundary_type + 
+            raise NotImplementedError("Error: " + self._boundary_type +
                                       " not implemented")
 
     def _update(self, objective):
 
         # Perturb centroid
         perturbed_dimensions = self._global_rng.choice(self._par_choices,
-                                    size=self._num_mutations, replace=False)
+                                                       size=self._num_mutations,
+                                                       replace=False)
         local_perturbation = self._worker_rngs[self._rank].randn(
-                            self._num_mutations)
+            self._num_mutations)
         local_perturbation *= self._step_size
         self._centroid[perturbed_dimensions] += local_perturbation
 
@@ -275,8 +250,8 @@ class BasicBoundedES(BasicES):
 
         # Consolidate return values
         all_costs = np.empty(self._size, dtype=np.float32)
-        self._comm.Allgather([local_cost, self._MPI.FLOAT], 
-                            [all_costs, self._MPI.FLOAT])
+        self._comm.Allgather([local_cost, self._MPI.FLOAT],
+                             [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
 
         self._update_centroid(all_costs, local_perturbation, perturbed_dimensions)
@@ -292,13 +267,14 @@ class BasicBoundedES(BasicES):
     def __setstate__(self, state):
         super().__setstate__(state)
 
-        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
-        self._lower_bounds = self._bounds[:,0]
-        self._upper_bounds = self._bounds[:,1]
+        self._parameter_scale = (self._bounds[:, 1] - self._bounds[:, 0]) / 1.
+        self._lower_bounds = self._bounds[:, 0]
+        self._upper_bounds = self._bounds[:, 1]
 
         # bound initial centroid
         self._apply_bounds(self._centroid)
         self._old_centroid = self._centroid.copy()
+
 
 class RandNumTableES(BasicES):
     """
@@ -361,8 +337,8 @@ class RandNumTableES(BasicES):
         step is too large)
         """
 
-        return random_slices(rng, self._rand_num_table_size, 
-                            self._num_mutations, self._max_table_step)
+        return random_slices(rng, self._rand_num_table_size,
+                             self._num_mutations, self._max_table_step)
 
     def _draw_random_parameter_slices(self, rng):
         """
@@ -371,21 +347,21 @@ class RandNumTableES(BasicES):
         step is too large)
         """
 
-        return random_slices(rng, self._num_parameters, 
-                            self._num_mutations, self._max_param_step)
+        return random_slices(rng, self._num_parameters,
+                             self._num_mutations, self._max_param_step)
 
     def _update(self, objective):
 
         # Perturb centroid
         unmatched_dimension_slices = self._draw_random_parameter_slices(
-                                            self._global_rng)
+            self._global_rng)
         unmatched_perturbation_slices = self._draw_random_table_slices(
-                                            self._worker_rngs[self._rank])
+            self._worker_rngs[self._rank])
 
         # Match slices against each other
         dimension_slices, perturbation_slices = match_slices(
-                                                    unmatched_dimension_slices, 
-                                                    unmatched_perturbation_slices)
+            unmatched_dimension_slices,
+            unmatched_perturbation_slices)
         # Apply perturbations
         multi_slice_add(self._centroid, self._rand_num_table,
                         dimension_slices, perturbation_slices)
@@ -396,41 +372,42 @@ class RandNumTableES(BasicES):
 
         # Consolidate return values
         all_costs = np.empty(self._size, dtype=np.float32)
-        self._comm.Allgather([local_cost, self._MPI.FLOAT], 
-                            [all_costs, self._MPI.FLOAT])
+        self._comm.Allgather([local_cost, self._MPI.FLOAT],
+                             [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
 
-        self._update_centroid(all_costs, unmatched_dimension_slices, 
-                                dimension_slices, perturbation_slices)
+        self._update_centroid(all_costs, unmatched_dimension_slices,
+                              dimension_slices, perturbation_slices)
 
     def _reconstruct_perturbation(self, rank, master_dim_slices, parent_num):
 
-            perturbation_slices = self._draw_random_table_slices(
-                                    self._worker_rngs[rank])
-            dimension_slices, perturbation_slices = match_slices(
-                                                    master_dim_slices, 
-                                                    perturbation_slices)
-            multi_slice_divide(self._old_centroid, self._weights[parent_num],
-                dimension_slices)
-            multi_slice_add(self._old_centroid, self._rand_num_table,
-                dimension_slices, perturbation_slices)
-            multi_slice_multiply(self._old_centroid, self._weights[parent_num],
-                dimension_slices)
+        perturbation_slices = self._draw_random_table_slices(
+            self._worker_rngs[rank])
+        dimension_slices, perturbation_slices = match_slices(
+            master_dim_slices,
+            perturbation_slices)
+        multi_slice_divide(self._old_centroid, self._weights[parent_num],
+                           dimension_slices)
+        multi_slice_add(self._old_centroid, self._rand_num_table,
+                        dimension_slices, perturbation_slices)
+        multi_slice_multiply(self._old_centroid, self._weights[parent_num],
+                             dimension_slices)
 
-    def _update_centroid(self, all_costs, master_dim_slices, local_dim_slices, local_perturbation_slices):
+    def _update_centroid(self, all_costs, master_dim_slices, local_dim_slices,
+                         local_perturbation_slices):
         """
-        Adds an additional multiply opperation to avoid creating a new
+        Adds an additional multiply operation to avoid creating a new
         set of arrays for the slices. Not sure which would be faster
         """
         for parent_num, rank in enumerate(np.argsort(all_costs)):
             if parent_num < self._num_parents:
                 if rank == self._rank:
                     multi_slice_divide(self._old_centroid, self._weights[parent_num],
-                        local_dim_slices)
+                                       local_dim_slices)
                     multi_slice_add(self._old_centroid, self._rand_num_table,
-                        local_dim_slices, local_perturbation_slices)
+                                    local_dim_slices, local_perturbation_slices)
                     multi_slice_multiply(self._old_centroid, self._weights[parent_num],
-                        local_dim_slices)
+                                         local_dim_slices)
 
                 else:
                     self._reconstruct_perturbation(rank, master_dim_slices, parent_num)
@@ -439,10 +416,11 @@ class RandNumTableES(BasicES):
                 if rank != self._rank:
                     self._draw_random_table_slices(self._worker_rngs[rank])
 
-        multi_slice_assign(self._centroid, self._old_centroid, 
-                            master_dim_slices, master_dim_slices)
+        multi_slice_assign(self._centroid, self._old_centroid,
+                           master_dim_slices, master_dim_slices)
 
-class BoundedES(RandNumTableES):
+
+class BoundedRandNumTableES(RandNumTableES):
     """
     Currently support clipping and periodic bounds
     boundary_type: "clip"
@@ -460,9 +438,9 @@ class BoundedES(RandNumTableES):
         self._boundary_type = kwargs.get("boundary_type", "clip")
         # Bounds is a 2D array with shape (num_params x 2) (low,high)
         self._bounds = np.array(bounds, dtype=np.float32)
-        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
-        self._lower_bounds = self._bounds[:,0]
-        self._upper_bounds = self._bounds[:,1]
+        self._parameter_scale = (self._bounds[:, 1] - self._bounds[:, 0]) / 1.
+        self._lower_bounds = self._bounds[:, 0]
+        self._upper_bounds = self._bounds[:, 1]
 
         # bound initial centroid
         self._apply_bounds(self._centroid, [np.s_[:]])
@@ -479,9 +457,9 @@ class BoundedES(RandNumTableES):
     def __setstate__(self, state):
         super().__setstate__(state)
 
-        self._parameter_scale = (self._bounds[:,1] - self._bounds[:,0]) / 1.
-        self._lower_bounds = self._bounds[:,0]
-        self._upper_bounds = self._bounds[:,1]
+        self._parameter_scale = (self._bounds[:, 1] - self._bounds[:, 0]) / 1.
+        self._lower_bounds = self._bounds[:, 0]
+        self._upper_bounds = self._bounds[:, 1]
 
         # bound initial centroid
         self._apply_bounds(self._centroid, [np.s_[:]])
@@ -493,9 +471,9 @@ class BoundedES(RandNumTableES):
         the parameters to their desired range
         """
         multi_slice_multiply(search_values, self._parameter_scale,
-            slice_list, slice_list)
-        multi_slice_add(search_values, self._lower_bounds, 
-            slice_list, slice_list)
+                             slice_list, slice_list)
+        multi_slice_add(search_values, self._lower_bounds,
+                        slice_list, slice_list)
 
     def _periodic_search_parameters(self, search_values, slice_list):
         """
@@ -521,25 +499,25 @@ class BoundedES(RandNumTableES):
     def _apply_bounds(self, search_values, slice_list):
 
         if self._boundary_type == "clip":
-            multi_slice_clip(search_values, self._lower_bounds, 
-                self._upper_bounds, slice_list, slice_list, slice_list)
+            multi_slice_clip(search_values, self._lower_bounds,
+                             self._upper_bounds, slice_list, slice_list, slice_list)
 
         else:
-            raise NotImplementedError("Error: " + self._boundary_type + 
+            raise NotImplementedError("Error: " + self._boundary_type +
                                       " not implemented")
 
     def _update(self, objective):
 
         # Perturb centroid
         unmatched_dimension_slices = self._draw_random_parameter_slices(
-                                            self._global_rng)
+            self._global_rng)
         unmatched_perturbation_slices = self._draw_random_table_slices(
-                                            self._worker_rngs[self._rank])
+            self._worker_rngs[self._rank])
 
         # Match slices against each other
         dimension_slices, perturbation_slices = match_slices(
-                                                    unmatched_dimension_slices, 
-                                                    unmatched_perturbation_slices)
+            unmatched_dimension_slices,
+            unmatched_perturbation_slices)
 
         # Apply perturbations
         multi_slice_add(self._centroid, self._rand_num_table,
@@ -554,14 +532,15 @@ class BoundedES(RandNumTableES):
 
         # Consolidate return values
         all_costs = np.empty(self._size, dtype=np.float32)
-        self._comm.Allgather([local_cost, self._MPI.FLOAT], 
-                            [all_costs, self._MPI.FLOAT])
+        self._comm.Allgather([local_cost, self._MPI.FLOAT],
+                             [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
 
-        self._update_centroid(all_costs, unmatched_dimension_slices, 
-                                dimension_slices, perturbation_slices)
+        self._update_centroid(all_costs, unmatched_dimension_slices,
+                              dimension_slices, perturbation_slices)
 
-    def _update_centroid(self, all_costs, master_dim_slices, local_dim_slices, local_perturbation_slices):
+    def _update_centroid(self, all_costs, master_dim_slices, local_dim_slices,
+                         local_perturbation_slices):
         """
         Adds an additional multiply opperation to avoid creating a new
         set of arrays for the slices. Not sure which would be faster
@@ -574,11 +553,11 @@ class BoundedES(RandNumTableES):
             if parent_num < self._num_parents:
                 if rank == self._rank:
                     multi_slice_divide(self._old_centroid, self._weights[parent_num],
-                        local_dim_slices)
+                                       local_dim_slices)
                     multi_slice_add(self._old_centroid, self._rand_num_table,
-                        local_dim_slices, local_perturbation_slices)
+                                    local_dim_slices, local_perturbation_slices)
                     multi_slice_multiply(self._old_centroid, self._weights[parent_num],
-                        local_dim_slices)
+                                         local_dim_slices)
 
                 else:
                     self._reconstruct_perturbation(rank, master_dim_slices, parent_num)
@@ -589,333 +568,10 @@ class BoundedES(RandNumTableES):
 
         # apply bounds in this window to prevent problems in next iteration
         self._apply_bounds(self._old_centroid, master_dim_slices)
-        multi_slice_assign(self._centroid, self._old_centroid, 
-                            master_dim_slices, master_dim_slices)
+        multi_slice_assign(self._centroid, self._old_centroid,
+                           master_dim_slices, master_dim_slices)
 
-def multi_slice_add(x1_inplace, x2, x1_slices=[], x2_slices=[]):
-    """
-    Does an inplace addition on x1 given a list of slice objects
-    If slices for both are given, it is assumed that they will be of
-    the same size and each slice will have the same # of elements
-    """
-
-    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
-        for x1_slice in x1_slices:
-            x1_inplace[x1_slice] += x2
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
-            and (len(x2_slices) == len(x1_slices)):
-
-        for i in range(len(x1_slices)):
-            x1_inplace[x1_slices[i]] += x2[x2_slices[i]]
-
-    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
-        x1_inplace += x2
-
-def multi_slice_subtract(x1_inplace, x2, x1_slices=[], x2_slices=[]):
-    """
-    Does an inplace addition on x1 given a list of slice objects
-    If slices for both are given, it is assumed that they will be of
-    the same size and each slice will have the same # of elements
-    """
-
-    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
-        for x1_slice in x1_slices:
-            x1_inplace[x1_slice] -= x2
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
-            and (len(x2_slices) == len(x1_slices)):
-
-        for i in range(len(x1_slices)):
-            x1_inplace[x1_slices[i]] -= x2[x2_slices[i]]
-
-    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
-        x1_inplace -= x2
-
-def multi_slice_multiply(x1_inplace, x2, x1_slices=[], x2_slices=[]):
-    """
-    Does an inplace multiplication on x1 given a list of slice objects
-    If slices for both are given, it is assumed that they will be of
-    the same size and each slice will have the same # of elements
-    """
-
-    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
-        for x1_slice in x1_slices:
-            x1_inplace[x1_slice] *= x2
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
-            and (len(x2_slices) == len(x1_slices)):
-
-        for i in range(len(x1_slices)):
-            x1_inplace[x1_slices[i]] *= x2[x2_slices[i]]
-
-    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
-        x1_inplace *= x2
-
-def multi_slice_divide(x1_inplace, x2, x1_slices=[], x2_slices=[]):
-    """
-    Does an inplace multiplication on x1 given a list of slice objects
-    If slices for both are given, it is assumed that they will be of
-    the same size and each slice will have the same # of elements
-    """
-
-    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
-        for x1_slice in x1_slices:
-            x1_inplace[x1_slice] /= x2
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
-            and (len(x2_slices) == len(x1_slices)):
-
-        for i in range(len(x1_slices)):
-            x1_inplace[x1_slices[i]] /= x2[x2_slices[i]]
-
-    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
-        x1_inplace /= x2
-
-def multi_slice_assign(x1_inplace, x2, x1_slices=[], x2_slices=[]):
-    """
-    Does an inplace assignment on x1 given a list of slice objects
-    If slices for both are given, it is assumed that they will be of
-    the same size and each slice will have the same # of elements
-    """
-
-    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
-        for x1_slice in x1_slices:
-            x1_inplace[x1_slice] = x2
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
-            and (len(x2_slices) == len(x1_slices)):
-
-        for i in range(len(x1_slices)):
-            x1_inplace[x1_slices[i]] = x2[x2_slices[i]]
-
-    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
-        x1_inplace = x2
-
-def multi_slice_mod(x1_inplace, x2, x1_slices=[], x2_slices=[]):
-    """
-    Does an inplace modulo on x1 given a list of slice objects
-    If slices for both are given, it is assumed that they will be of
-    the same size and each slice will have the same # of elements
-    """
-
-    if (len(x1_slices) != 0) and (len(x2_slices) == 0):
-        for x1_slice in x1_slices:
-            x1_inplace[x1_slice] %= x2
-
-    elif (len(x1_slices) != 0) and (len(x2_slices) != 0) \
-            and (len(x2_slices) == len(x1_slices)):
-
-        for i in range(len(x1_slices)):
-            x1_inplace[x1_slices[i]] %= x2[x2_slices[i]]
-
-    elif (len(x1_slices) == 0) and (len(x2_slices) == 0):
-        x1_inplace %= x2
-
-def multi_slice_fabs(x1_inplace, x1_slices=[]):
-    """
-    Does an inplace fabs on x1 given a list of slice objects
-    """
-
-    if (len(x1_slices) != 0):
-        for x1_slice in x1_slices:
-            np.fabs(x1_inplace[x1_slice], out=x1_inplace[x1_slice])
-
-    else:
-        np.fabs(x1_inplace, out=x1_inplace)
-
-def multi_slice_clip(x1_inplace, lower, upper, xslices, lslices=[], uslices=[]):
-    """
-    Does an inplace clip on x1
-    """
-
-    if (len(lslices) == 0) or (len(uslices) == 0):
-        for xslice in xslices:
-            np.clip(x1_inplace[xslice], lower, upper, out=x1_inplace[xslice])
-
-    elif (len(lslices) != 0) and (len(uslices) != 0) \
-            and (len(lslices) == len(uslices)):
-        for i in range(len(xslices)):
-            np.clip(x1_inplace[xslices[i]], lower[lslices[i]], upper[uslices[i]],
-                out=x1_inplace[xslices[i]])
-
-    elif (len(lslices) == 0) and (len(uslices) == 0) and (len(xslices) == 0):
-        np.clip(x1_inplace, lower, upper, out=x1_inplace)
-
-    else:
-        raise NotImplementedError("Invalid arguments in multi_slice_clip")
-
-def random_slices(rng, iterator_size, slice_size, max_step=1):
-    """
-    Returns a list of slice objects given the size of the iterator it
-    will be used for and the number of elements desired for the slice
-    This will return additional slice each time it wraps around the
-    iterator
-
-    iterator_size - the number of elements in the iterator
-    slice_size - the number of elements the slices will cover
-    max_step - the maximum number of steps a slice will take.
-                This affects the number of slice objects created, as
-                larger max_step will create more wraps around the iterator
-                and so return more slice objects
-
-    The number of elements is not garanteed when slices overlap themselves
-    """
-
-    step_size = rng.randint(1, max_step + 1) # randint is exclusive
-    start_step = rng.randint(0, iterator_size)
-
-    return build_slices(start_step, iterator_size, slice_size, step_size)
-
-def build_slices(start_step, iterator_size, slice_size, step_size):
-    """
-    Given a starting index, the size of the total members of the window,
-    a step size, and the size of the iterator the slice will act upon,
-    this function returns a list of slice objects that will cover that full
-    window. Upon reaching the endpoints of the iterator, it will wrap around.
-    """
-
-    if step_size >= iterator_size:
-        raise NotImplementedError("Error: step size must be less than the"+
-            "size of the iterator")
-    end_step = start_step + step_size * slice_size
-    slices = []
-    slice_start = start_step
-    for i in range(1 + (end_step - step_size) // iterator_size):
-        remaining = end_step - i * iterator_size
-        if (remaining > iterator_size):
-            remaining = iterator_size
-        
-        slice_end = (slice_start + 1) + ((remaining - \
-                    (slice_start + 1)) // step_size) * step_size
-        slices.append(np.s_[slice_start:slice_end:step_size])
-        slice_start = (slice_end - 1 + step_size) % iterator_size
-
-    return slices
-
-def match_slices(slice_list1, slice_list2):
-    """
-    Will attempt to create additional slices to match the # elements of 
-    each slice from list1 to the corresponding slice of list 2.
-    Will fail if the total # elements is different for each list
-    """
-
-    slice_list1 = list(slice_list1) 
-    slice_list2 = list(slice_list2)
-    if slice_size(slice_list1) == slice_size(slice_list2):
-        slice_list1.reverse()
-        slice_list2.reverse()
-        new_list1_slices = []
-        new_list2_slices = []
-
-        while len(slice_list1) != 0 and len(slice_list2) != 0:
-            slice_1 = slice_list1.pop()
-            slice_2 = slice_list2.pop()
-            size_1 = slice_size(slice_1)
-            size_2 = slice_size(slice_2)
-
-            if size_1 < size_2:
-                new_slice_2, slice_2 = splice_slice(slice_2, size_1)
-                slice_list2.append(slice_2)
-                new_list2_slices.append(new_slice_2)
-                new_list1_slices.append(slice_1)
-
-            elif size_2 < size_1:
-                new_slice_1, slice_1 = splice_slice(slice_1, size_2)
-                slice_list1.append(slice_1)
-                new_list1_slices.append(new_slice_1)
-                new_list2_slices.append(slice_2)
-
-            elif size_1 == size_2:
-                new_list1_slices.append(slice_1)
-                new_list2_slices.append(slice_2)
-
-    else:
-        raise AssertionError("Error: slices not compatible")
-
-    return new_list1_slices, new_list2_slices
-
-def splice_slice(slice_obj, num_elements):
-    """
-    Returns two slices spliced from a single slice.
-    The size of the first slice will be # elements
-    The size of the second slice will be the remainder
-    """
-    
-    splice_point = slice_obj.step * (num_elements - 1) + slice_obj.start + 1
-    new_start = splice_point - 1 + slice_obj.step
-    return np.s_[slice_obj.start : splice_point : slice_obj.step], \
-            np.s_[new_start : slice_obj.stop : slice_obj.step]
-
-def slice_size(slice_objs):
-    """
-    Returns the total number of elements in the combined slices
-    Also works if given a single slice
-    """
-
-    num_elements = 0
-
-    try:
-        for sl in slice_objs:
-            num_elements += (sl.stop - (sl.start + 1)) // sl.step + 1
-    except TypeError:
-        num_elements += (slice_objs.stop - (slice_objs.start + 1)) // slice_objs.step + 1
-
-    return num_elements
-
-def elli(x):
-    """ellipsoid-like test cost function"""
-    n = len(x)
-    aratio = 1e3
-    return sum(x[i]**2 * aratio**(2.*i/(n-1)) for i in range(n))
-
-def sphere(x):
-    """sphere-like, ``sum(x**2)``, test cost function"""
-    return sum(x[i]**2 for i in range(len(x)))
-
-def rosenbrock(x):
-    """Rosenbrock-like test cost function"""
-    n = len(x)
-    if n < 2:
-        raise ValueError('dimension must be greater one')
-    return sum(100 * (x[i]**2 - x[i+1])**2 + (x[i] - 1)**2 
-        for i in range(n-1))
 
 if __name__ == '__main__':
     """test"""
     pass
-    # sl1 = build_slices(7, 13, 10, 2)
-    # sl2 = build_slices(0, 13, 10, 2)
-    # print(sl1)
-    # print(sl2)
-    # new_sl1, new_sl2 = match_slices(sl1, sl2)
-    # print()
-    # print(new_sl1)
-    # print(new_sl2)
-
-    # for i in range(len(new_sl1)):
-    #     print(slice_size(new_sl1[i]), slice_size(new_sl2[i]))
-    # print(slice_size(new_sl1), slice_size(new_sl2))
-
-    # a1 = np.arange(0, 13, 1)
-    # a2 = 2*np.ones(13)
-    # a3 = 5*np.ones(13)
-    # print(a1)
-    # print(a2)
-    # print()
-    # multi_slice_clip(a1, a2, a3, new_sl2, new_sl2, new_sl2)
-    # print(a1)
-    # print(a2)
-
-    # print(build_slices(4, 5, 2, 6))
-
-    # xo = np.array([0.5 for i in range(10)])
-    # bounds = [ (-1.0,5.0) for i in range(2) ] + [ (0.01,5) for i in range(8) ]
-    # es_test = BoundedES(xo, 0.1, bounds, verbose=True, objective=sphere)
-    # es_test(100)
-    # es_test.plot_cost_over_time()
-    # es_test.save("test.cmaes")
-
-    # es_test = BoundedES.load("test.cmaes")
-    # es_test(100, objective=sphere)
-    # es_test.plot_cost_over_time()
