@@ -5,15 +5,14 @@ from test_objectives import *
 
 def es_test():
     """
-    Runs some tests for the GAs
+    Runs some tests for the ESs
     """
 
-    xo = np.array([0.5 for i in range(10)])
-    bounds = [(-1.0,5.0) for i in range(2) ] + [(0.01,5) for i in range(8)]
-    test = evostrat.BoundedRandNumTableES(xo, 0.1, bounds, verbose=True,
-                                          objective=sphere)
+    xo = np.random.uniform(0.3, 0.7, 10)
+    # bounds = [(-5.0,5.0) for i in range(2) ] + [(0.01,5) for i in range(8)]
+    test = evostrat.BasicES(xo, 0.1, verbose=False, objective=sphere)
     test(100)
-    # test.plot_cost_over_time()
+    test.plot_cost_over_time()
     # test.save("test.es")
 
     # test = evostrat.BoundedRandNumTableES.load("test.es")

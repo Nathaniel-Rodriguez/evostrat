@@ -51,7 +51,15 @@ class BasicES:
         self._centroid = np.array(xo, dtype=np.float32)
         self._old_centroid = self._centroid.copy()
 
-    def __call__(self, num_iterations, objective=None, args=()):
+    def __call__(self, num_iterations, objective=None, kwargs=None):
+        """
+        :param num_iterations: how many generations it will run for
+        :param objective: a full or partial version of function
+        :param kwargs: key word arguments for additional objective parameters
+        :return: None
+        """
+        if kwargs is None:
+            kwargs = {}
 
         if (self.objective is not None) and (objective is None):
             objective = self.objective
@@ -59,7 +67,7 @@ class BasicES:
         elif (self.objective is None) and (objective is not None):
             raise AttributeError("Error: No objective defined")
 
-        partial_objective = partial(objective, *args)
+        partial_objective = partial(objective, **kwargs)
         for i in range(num_iterations):
             if self._verbose and (self._rank == 0):
                 print("Generation:", self._generation_number)
@@ -124,10 +132,8 @@ class BasicES:
             import matplotlib.pyplot as plt
 
             costs_by_generation = np.array(self._score_history)
-            min_cost_by_generation = \
-                np.min(costs_by_generation, axis=1)
-            mean_cost_by_generation = \
-                np.mean(costs_by_generation, axis=1)
+            min_cost_by_generation = np.min(costs_by_generation, axis=1)
+            mean_cost_by_generation = np.mean(costs_by_generation, axis=1)
 
             plt.plot(range(len(mean_cost_by_generation)),
                      mean_cost_by_generation,

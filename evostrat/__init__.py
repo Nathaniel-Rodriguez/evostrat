@@ -67,3 +67,5 @@ from .genalg import BasicGA
 from .genalg import BoundedBasicGA
 from .genalg import RandNumTableGA
 from .genalg import BoundedRandNumTableGA
+from .genalg import real_member_generator
+from .genalg import real_mutator

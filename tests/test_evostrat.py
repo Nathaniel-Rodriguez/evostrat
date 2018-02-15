@@ -58,5 +58,16 @@ class TestES(unittest.TestCase):
         self.assertEqual(stderr, '')
 
 
+class TestGA(unittest.TestCase):
+    pyfile = 'ga_test_script.py'
+
+    def test_basic_es(self):
+        dirname = os.path.abspath(os.path.dirname(__file__))
+        script = os.path.join(dirname, self.pyfile)
+        status, stdout, stderr = execute(4, script)
+        self.assertEqual(status, 0)
+        self.assertEqual(stderr, '')
+
+
 if __name__ == '__main__':
     unittest.main()

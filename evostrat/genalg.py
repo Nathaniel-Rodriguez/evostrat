@@ -1,7 +1,41 @@
 import numpy as np
 import pickle
+import random
 from functools import partial
 from .sliceops import *
+
+
+def real_member_generator(rng, size, bounds):
+    """
+    Can be used with BasicGAs
+
+    Function that takes a numpy rng to generate a new member.
+    size: the size of the returned array
+    bounds: (low, high)
+
+    Draws from a uniform distribution between low and high.
+
+    :return 1d numpy float32 array that represents member
+    """
+
+    return rng.uniform(bounds[0], bounds[1], size).astype(np.float32)
+
+
+def real_mutator(member, rng, scale):
+    """
+    Can be used with BasicGAs
+
+    :param member: a member to mutate
+    :param rng: a numpy randomState
+    :param scale: scale of normal mutation
+    :return: reference to member that is changed in-place
+    """
+
+    perturbation = rng.randn(member.size)
+    perturbation *= scale
+    member += perturbation
+
+    return member
 
 
 class BasicGA:
@@ -38,7 +72,9 @@ class BasicGA:
     """
 
     def __init__(self, member_generating_function, mutation_function,
-                 member_generating_function_args=(), mutation_function_args=(), **kwargs):
+                 member_generating_function_kwargs=None,
+                 mutation_function_kwargs=None,
+                 **kwargs):
         """
         member_generating_function: a function that takes a numpy RNG as an
             argument and will return a np.float32 array that can be passed to
@@ -71,9 +107,15 @@ class BasicGA:
         self._rank = self._comm.Get_rank()
 
         # Assign properties
+        if member_generating_function_kwargs is None:
+            member_generating_function_kwargs = {}
+
+        if mutation_function_kwargs is None:
+            mutation_function_kwargs = {}
+
         self._member_generating_function = partial(member_generating_function,
-                                                   *member_generating_function_args)
-        self._mutation_function = partial(mutation_function, *mutation_function_args)
+                                                   **member_generating_function_kwargs)
+        self._mutation_function = partial(mutation_function, **mutation_function_kwargs)
 
         self.objective = kwargs.get('objective', None)
         self.obj_args = kwargs.get('obj_args', ())
@@ -86,20 +128,31 @@ class BasicGA:
 
         self._max_seed = 2 ** 32 - 1
         self._global_seed = kwargs.get('seed', 1)
+        self._py_rng = random.Random(self._global_seed)
         self._global_rng = np.random.RandomState(self._global_seed)
-        self._initial_seed_list = self._global_rng.choice(self._max_seed,
-                                                          size=self._size, replace=False)
-        self._seed_seed_list = self._global_rng.choice(self._max_seed,
-                                                       size=self._size, replace=False)
-        self._mutation_rng = np.random.RandomState(self._initial_seed_list[self._rank])
+        self._initial_seed_list = self._py_rng.sample(range(self._max_seed),
+                                                      self._size)
+        self._seed_seed_list = self._py_rng.sample(range(self._max_seed),
+                                                   self._size)
+        self._mutation_rng = np.random.RandomState(
+            self._initial_seed_list[self._rank])
         self._seed_rng = np.random.RandomState(self._seed_seed_list[self._rank])
 
         self._generation_number = 0
         self._score_history = []
         self._member_genealogy = [self._initial_seed_list[self._rank]]
-        self._member = self._make_member(self._mutation_rng, self._member_genealogy)
+        self._member = self._make_member(self._mutation_rng,
+                                         self._member_genealogy)
 
-    def __call__(self, num_iterations, objective=None, args=()):
+    def __call__(self, num_iterations, objective=None, kwargs=None):
+        """
+        :param num_iterations: how many generations it will run for
+        :param objective: a full or partial version of function
+        :param kwargs: key word arguments for additional objective parameters
+        :return: None
+        """
+        if kwargs is None:
+            kwargs = {}
 
         if (self.objective is not None) and (objective is None):
             objective = self.objective
@@ -107,7 +160,7 @@ class BasicGA:
         elif (self.objective is None) and (objective is None):
             raise AttributeError("Error: No objective defined")
 
-        partial_objective = partial(objective, *args)
+        partial_objective = partial(objective, **kwargs)
         for i in range(num_iterations):
             if self._verbose and (self._rank == 0):
                 print("Generation:", self._generation_number)
@@ -149,7 +202,7 @@ class BasicGA:
         picks randomly one of the ranks which has a member with cost in the
         bottom _num_parents
         """
-        best_ranks = [rank for order, rank in l2g_order_of_members
+        best_ranks = [rank for order, rank in enumerate(l2g_order_of_members)
                       if order < self._num_parents]
         return self._global_rng.choice(best_ranks)
 
@@ -212,8 +265,8 @@ class BasicGA:
 
                     # apply mutation
                     self._mutation_rng.seed(seed)
-                    self._member = self._mutation_function(
-                        self._member, self._mutation_rng)
+                    self._member = self._mutation_function(self._member,
+                                                           self._mutation_rng)
 
     def _update_population(self, all_costs):
         """
@@ -241,10 +294,8 @@ class BasicGA:
             import matplotlib.pyplot as plt
 
             costs_by_generation = np.array(self._score_history)
-            min_cost_by_generation = \
-                np.min(costs_by_generation, axis=1)
-            mean_cost_by_generation = \
-                np.mean(costs_by_generation, axis=1)
+            min_cost_by_generation = np.min(costs_by_generation, axis=1)
+            mean_cost_by_generation = np.mean(costs_by_generation, axis=1)
 
             plt.plot(range(len(mean_cost_by_generation)),
                      mean_cost_by_generation,
@@ -269,19 +320,26 @@ class BasicGA:
                 plt.show()
                 plt.clf()
 
-    def assign_member_generating_function(self, member_generating_function, args=()):
+    def assign_member_generating_function(self, member_generating_function, kwargs=None):
         """
         If a GA is reloaded it needs to be reassigned a member generating
         function. Use this method to do so.
         """
-        self._member_generating_function = partial(member_generating_function, *args)
+        if kwargs is None:
+            kwargs = {}
 
-    def assign_mutation_function(self, mutation_function, args=()):
+        self._member_generating_function = partial(member_generating_function,
+                                                   **kwargs)
+
+    def assign_mutation_function(self, mutation_function, kwargs=None):
         """
         If a GA is reloaded it needs to be reassigned a mutation function.
         Use this method to do so.
         """
-        self._mutation_function = partial(mutation_function, *args)
+        if kwargs is None:
+            kwargs = {}
+
+        self._mutation_function = partial(mutation_function, **kwargs)
 
     @classmethod
     def load(cls, filename):
@@ -310,6 +368,7 @@ class BasicGA:
                  "_max_seed": self._max_seed,
                  "_global_seed": self._global_seed,
                  "_global_rng": self._global_rng,
+                 "_py_rng": self._py_rng,
                  "_initial_seed_list": self._initial_seed_list,
                  "_seed_seed_list": self._seed_seed_list,
                  "_mutation_rng": self._mutation_rng,
@@ -339,7 +398,9 @@ class BasicGA:
 
 
 class BoundedBasicGA(BasicGA):
-
+    """
+    A BasicGA with bounds.
+    """
     def __init__(self, member_generating_function, mutation_function,
                  bounds, **kwargs):
         """
@@ -354,7 +415,19 @@ class BoundedBasicGA(BasicGA):
 
 
 class RandNumTableGA(BasicGA):
+    """
+    A basic GA that uses a chached random number table. This speeds up
+    the mutation process considerably at the cost of memory. By using a table
+    the algorithm can be made several times faster as random number generation
+    is expensive.
 
+    The member_generating_function and mutation_function must take an additional
+    argument, called 'table' which will be a reference to the float32 random
+    number table. I encourage using slices from sliceops to draw random
+    segments from this table as values.
+
+    The table is a numpy array of normally distributed values: N(0,1).
+    """
     def __init__(self, member_generating_function, mutation_function, **kwargs):
         """
         member_generating_function: a function that takes a numpy RNG and table
@@ -369,8 +442,15 @@ class RandNumTableGA(BasicGA):
 
 class BoundedRandNumTableGA(RandNumTableGA):
     """
-    Empty
+    A RandNumTable with bounds.
     """
 
     def __init__(self):
-        pass
+        """
+        member_generating_function: a function that takes a numpy RNG and table
+            as an argument and will return a np.float32 array that can be passed
+            to the fitness function.
+        mutation_function: a function that takes a numpy RNG and table as an
+            argument and will return a np.float32 array that can be added to a
+            member to produce a mutation.
+        """
