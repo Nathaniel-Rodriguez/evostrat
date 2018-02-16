@@ -9,11 +9,12 @@ def ga_test():
 
     test = evostrat.BasicGA(evostrat.real_member_generator,
                             evostrat.real_mutator,
-                            {'size':10,'bounds':[0.3,0.7]}, {'scale':0.1},
-                            elite_fraction=0.0,
-                            seed=2,
-                            verbose=False, objective=sphere)
-    test(100)
+                            {'size':5,'bounds':[0.3,0.7]}, {'scale':0.005},
+                            elite_fraction=0.125,
+                            parent_fraction=0.375,
+                            seed=1,
+                            verbose=True, objective=sphere)
+    test(5)
     test.plot_cost_over_time()
     # test.save("test.basicga")
 

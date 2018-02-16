@@ -118,12 +118,16 @@ class BasicGA:
         self._mutation_function = partial(mutation_function, **mutation_function_kwargs)
 
         self.objective = kwargs.get('objective', None)
-        self.obj_args = kwargs.get('obj_args', ())
-        self._parent_fraction = kwargs.get('parent_fraction', 0.5)
+        self.obj_kwargs = kwargs.get('obj_kwargs', ())
+        self._parent_fraction = kwargs.get('parent_fraction', 0.3)
         self._num_parents = int(self._size * self._parent_fraction)
+        if self._rank == 0: #################
+            print("num_parents:",self._rank, self._num_parents) ########################
         self._verbose = kwargs.get('verbose', False)
-        self._elite_fraction = kwargs.get('elite_fraction', 0.2)
+        self._elite_fraction = kwargs.get('elite_fraction', 0.1)
         self._num_elite = int(self._size * self._elite_fraction)
+        if self._rank == 0: ##########
+            print("num_elite:",self._rank, self._num_elite)  ########################
         assert(self._num_elite < self._num_parents)
 
         self._max_seed = 2 ** 32 - 1
@@ -141,6 +145,7 @@ class BasicGA:
         self._generation_number = 0
         self._score_history = []
         self._member_genealogy = [self._initial_seed_list[self._rank]]
+        print("first genealogy:", self._rank, self._member_genealogy)  ########################
         self._member = self._make_member(self._mutation_rng,
                                          self._member_genealogy)
 
@@ -156,7 +161,7 @@ class BasicGA:
 
         if (self.objective is not None) and (objective is None):
             objective = self.objective
-            args = self.obj_args
+            kwargs = self.obj_kwargs
         elif (self.objective is None) and (objective is None):
             raise AttributeError("Error: No objective defined")
 
@@ -177,7 +182,7 @@ class BasicGA:
         for seed in seed_list[1:]:
             rng.seed(seed)
             new_member = self._mutation_function(new_member, rng)
-
+        print("\tmake_member:", self._generation_number, self._rank, seed_list, new_member)  ########################
         return new_member
 
     def _update_log(self, costs):
@@ -193,20 +198,19 @@ class BasicGA:
         self._comm.Allgather([local_cost, self._MPI.FLOAT],
                              [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
-
+        print("\tcost:", self._generation_number, self._rank, local_cost, self._member)  ########################
         # Apply mutations, elite selection, and broadcast genealogies
         self._update_population(all_costs)
 
-    def _chose_random_rank_by_performance(self, l2g_order_of_members):
+    def _chose_random_rank_by_performance(self, l2g_ranks):
         """
         picks randomly one of the ranks which has a member with cost in the
         bottom _num_parents
         """
-        best_ranks = [rank for order, rank in enumerate(l2g_order_of_members)
-                      if order < self._num_parents]
+        best_ranks = l2g_ranks[:self._num_parents]
         return self._global_rng.choice(best_ranks)
 
-    def _construct_message_list(self, l2g_order_of_members):
+    def _construct_message_list(self, l2g_ranks):
         """
         Builds a list of tuples with (send_rank, recv_rank) pairs
         Every rank must participate in building this so the global_rng
@@ -216,18 +220,17 @@ class BasicGA:
 
         messenger_list = []
         # For the rejects, pick a random parent to copy
-        for parent_num, rank in enumerate(l2g_order_of_members):
-            if parent_num > self._num_parents:
+        for parent_num, rank in enumerate(l2g_ranks):
+            if parent_num >= self._num_parents:
                 # randomly pick who to copy from higher rank members
-                chosen_rank = self._chose_random_rank_by_performance(
-                    l2g_order_of_members)
+                chosen_rank = self._chose_random_rank_by_performance(l2g_ranks)
                 messenger_list.append((chosen_rank, rank))
 
         return messenger_list
 
     def _dispatch_messages(self, messenger_list):
         """
-        Iterates through a messenger list and sends/recieves the genealogies
+        Iterates through a messenger list and sends/receives the genealogies
         for each pair of ranks
         """
         for messenger in messenger_list:
@@ -241,7 +244,7 @@ class BasicGA:
             if self._rank == messenger[1]:
                 self._member_genealogy = self._comm.recv(source=messenger[0])
 
-    def _construct_recieved_members(self, messenger_list):
+    def _construct_received_members(self, messenger_list):
         """
         Iterates through the messenger list and for ranks that recieved
         a genealogy it builds a new member from it and replaces the current
@@ -252,12 +255,12 @@ class BasicGA:
                 self._member = self._make_member(self._mutation_rng,
                                                  self._member_genealogy)
 
-    def _mutate_population(self, l2g_order_of_members):
+    def _mutate_population(self, l2g_ranks):
         """
         Preserve the top _num_elite members, mutate the rest
         """
-        for parent_num, rank in enumerate(l2g_order_of_members):
-            if parent_num > self._num_elite:
+        for parent_num, rank in enumerate(l2g_ranks):
+            if parent_num >= self._num_elite:
                 if rank == self._rank:
                     # draw mutation seed
                     seed = self._mutation_rng.randint(0, self._max_seed)
@@ -277,13 +280,17 @@ class BasicGA:
         """
 
         # argsort returns the indexes of all_costs that would sort the array
-        # so index of returned array is rank, while element at index is its
-        # fitness ranking
-        l2g_order_of_members = np.argsort(all_costs)
-        messenger_list = self._construct_message_list(l2g_order_of_members)
+        # This means the first value is the highest performing rank while the
+        # last value is the lowest performing rank
+        l2g_ranks = np.argsort(all_costs)
+        messenger_list = self._construct_message_list(l2g_ranks)
+        if self._rank == 0: ###############################
+            print("\t\torder:", self._generation_number, all_costs, l2g_ranks)  ########################
+            print("\t\tmessages:", messenger_list) ###################
+
         self._dispatch_messages(messenger_list)
-        self._construct_recieved_members(messenger_list)
-        self._mutate_population(l2g_order_of_members)
+        self._construct_received_members(messenger_list)
+        self._mutate_population(l2g_ranks)
 
     def plot_cost_over_time(self, prefix='test', logy=True, savefile=False):
         """
@@ -394,7 +401,7 @@ class BasicGA:
         self._member_generating_function = None
         self._mutation_function = None
         self.objective = None
-        self.obj_args = tuple()
+        self.obj_args = None
 
 
 class BoundedBasicGA(BasicGA):

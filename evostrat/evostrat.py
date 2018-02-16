@@ -23,7 +23,7 @@ class BasicES:
 
         # User input parameters
         self.objective = kwargs.get('objective', None)
-        self.obj_args = kwargs.get('obj_args', ())
+        self.obj_kwargs = kwargs.get('obj_kwargs', ())
         self._step_size = np.float32(step_size)
         self._num_parameters = len(xo)
         self._num_mutations = kwargs.get('num_mutations', self._num_parameters)
@@ -63,7 +63,7 @@ class BasicES:
 
         if (self.objective is not None) and (objective is None):
             objective = self.objective
-            args = self.obj_args
+            kwargs = self.obj_kwargs
         elif (self.objective is None) and (objective is not None):
             raise AttributeError("Error: No objective defined")
 
@@ -207,7 +207,7 @@ class BasicES:
         self._size = self._comm.Get_size()
         self._rank = self._comm.Get_rank()
         self.objective = None
-        self.obj_args = tuple()
+        self.obj_args = None
 
 
 class BoundedBasicES(BasicES):
