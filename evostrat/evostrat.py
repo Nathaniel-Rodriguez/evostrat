@@ -23,7 +23,7 @@ class BasicES:
 
         # User input parameters
         self.objective = kwargs.get('objective', None)
-        self.obj_kwargs = kwargs.get('obj_kwargs', ())
+        self.obj_kwargs = kwargs.get('obj_kwargs', {})
         self._step_size = np.float32(step_size)
         self._num_parameters = len(xo)
         self._num_mutations = kwargs.get('num_mutations', self._num_parameters)

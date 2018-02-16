@@ -118,7 +118,7 @@ class BasicGA:
         self._mutation_function = partial(mutation_function, **mutation_function_kwargs)
 
         self.objective = kwargs.get('objective', None)
-        self.obj_kwargs = kwargs.get('obj_kwargs', ())
+        self.obj_kwargs = kwargs.get('obj_kwargs', {})
         self._parent_fraction = kwargs.get('parent_fraction', 0.3)
         self._num_parents = int(self._size * self._parent_fraction)
         if self._rank == 0: #################
