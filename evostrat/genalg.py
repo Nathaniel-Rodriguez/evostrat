@@ -37,7 +37,7 @@ def real_mutator(member, rng, scale):
 
     return member
 
-
+# TODO: I don't actually have anything that returns best!!!!!!!! Need to add
 class BasicGA:
     """
     A modular GA that requires a mutation and member generating function
@@ -121,13 +121,13 @@ class BasicGA:
         self.obj_kwargs = kwargs.get('obj_kwargs', {})
         self._parent_fraction = kwargs.get('parent_fraction', 0.3)
         self._num_parents = int(self._size * self._parent_fraction)
-        if self._rank == 0: #################
-            print("num_parents:",self._rank, self._num_parents) ########################
+        # if self._rank == 0: #################
+        #     print("num_parents:",self._rank, self._num_parents) ########################
         self._verbose = kwargs.get('verbose', False)
         self._elite_fraction = kwargs.get('elite_fraction', 0.1)
         self._num_elite = int(self._size * self._elite_fraction)
-        if self._rank == 0: ##########
-            print("num_elite:",self._rank, self._num_elite)  ########################
+        # if self._rank == 0: ##########
+        #     print("num_elite:",self._rank, self._num_elite)  ########################
         assert(self._num_elite < self._num_parents)
 
         self._max_seed = 2 ** 32 - 1
@@ -145,7 +145,7 @@ class BasicGA:
         self._generation_number = 0
         self._score_history = []
         self._member_genealogy = [self._initial_seed_list[self._rank]]
-        print("first genealogy:", self._rank, self._member_genealogy)  ########################
+        # print("first genealogy:", self._rank, self._member_genealogy)  ########################
         self._member = self._make_member(self._mutation_rng,
                                          self._member_genealogy)
 
@@ -182,7 +182,7 @@ class BasicGA:
         for seed in seed_list[1:]:
             rng.seed(seed)
             new_member = self._mutation_function(new_member, rng)
-        print("\tmake_member:", self._generation_number, self._rank, seed_list, new_member)  ########################
+        # print("\tmake_member:", self._generation_number, self._rank, seed_list, new_member)  ########################
         return new_member
 
     def _update_log(self, costs):
@@ -198,7 +198,7 @@ class BasicGA:
         self._comm.Allgather([local_cost, self._MPI.FLOAT],
                              [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
-        print("\tcost:", self._generation_number, self._rank, local_cost, self._member)  ########################
+        # print("\tcost:", self._generation_number, self._rank, local_cost, self._member)  ########################
         # Apply mutations, elite selection, and broadcast genealogies
         self._update_population(all_costs)
 
@@ -284,9 +284,9 @@ class BasicGA:
         # last value is the lowest performing rank
         l2g_ranks = np.argsort(all_costs)
         messenger_list = self._construct_message_list(l2g_ranks)
-        if self._rank == 0: ###############################
-            print("\t\torder:", self._generation_number, all_costs, l2g_ranks)  ########################
-            print("\t\tmessages:", messenger_list) ###################
+        # if self._rank == 0: ###############################
+        #     print("\t\torder:", self._generation_number, all_costs, l2g_ranks)  ########################
+        #     print("\t\tmessages:", messenger_list) ###################
 
         self._dispatch_messages(messenger_list)
         self._construct_received_members(messenger_list)

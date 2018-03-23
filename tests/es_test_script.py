@@ -8,7 +8,7 @@ def es_test():
     Runs some tests for the ESs
     """
 
-    xo = np.random.uniform(0.3, 0.7, 10)
+    xo = np.random.uniform(0.3, 0.5, 10)
     # bounds = [(-5.0,5.0) for i in range(2) ] + [(0.01,5) for i in range(8)]
     test = evostrat.BasicES(xo, 0.1, verbose=False, objective=sphere)
     test(100)

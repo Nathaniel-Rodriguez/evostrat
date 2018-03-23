@@ -5,15 +5,21 @@ from .sliceops import *
 
 
 class BasicES:
+    """
+    Runs a basic distributed Evolutionary strategy using MPI. The centroid
+    is updated via a log-rank weighted sum of the population members that are
+    generated from a normal distribution. This class evaluates a COST function
+    rather than a fitness function.
+    """
 
     def __init__(self, xo, step_size, **kwargs):
         """
-        xo: initial centroid
-        step_size: float. the size of mutations
-        num_mutations: number of dims to mutate in each iter (defaults to #dim)
-        verbose: True/False. print info on run
-
+        :param xo: initial centroid
+        :param step_size: float. the size of mutations
+        :param num_mutations: number of dims to mutate in each iter (defaults to #dim)
+        :param verbose: True/False. print info on run
         """
+
         # Initiate MPI
         from mpi4py import MPI
         self._MPI = MPI
@@ -50,6 +56,9 @@ class BasicES:
         # State
         self._centroid = np.array(xo, dtype=np.float32)
         self._old_centroid = self._centroid.copy()
+        self._running_best = self._centroid.copy()
+        self._running_best_cost = np.float32(np.finfo(np.float32).max)
+        self._update_best_flag = False
 
     def __call__(self, num_iterations, objective=None, kwargs=None):
         """
@@ -58,14 +67,14 @@ class BasicES:
         :param kwargs: key word arguments for additional objective parameters
         :return: None
         """
-        if kwargs is None:
-            kwargs = {}
-
-        if (self.objective is not None) and (objective is None):
+        if objective is not None:
+            if kwargs is None:
+                kwargs = {}
+        elif (self.objective is None) and (objective is None):
+            raise AttributeError("Error: No objective defined")
+        else:
             objective = self.objective
             kwargs = self.obj_kwargs
-        elif (self.objective is None) and (objective is not None):
-            raise AttributeError("Error: No objective defined")
 
         partial_objective = partial(objective, **kwargs)
         for i in range(num_iterations):
@@ -75,7 +84,17 @@ class BasicES:
             self._generation_number += 1
 
     def _update(self, objective):
+        """
+        Selects a new perturbation and applies it locally to the node giving
+        a new set of parameters to evaluate the cost function on. The costs
+        from each node will then be broadcast to all other nodes.
+        Lastly the new centroid is calculated using a weighted sum of the top
+        X best members.
 
+        :param objective: a function that takes the numpy parameter array as
+            input.
+        :return: nothing, everything is updated in place
+        """
         # Perturb centroid
         perturbed_dimensions = self._global_rng.choice(self._par_choices,
                                                        size=self._num_mutations,
@@ -98,17 +117,63 @@ class BasicES:
         self._update_centroid(all_costs, local_perturbation, perturbed_dimensions)
 
     def _update_centroid(self, all_costs, local_perturbation, perturbed_dimensions):
+        """
+        This function applies perturbations to the centroid that will match
+        the perturbations from other nodes so that the other members of the
+        population can be generated locally. This needs to be done so that
+        the new centroid, which is a weighted sum of the original, can be
+        calculated.
 
+        *Updating of the running best centroid requires a bit of weaving code
+        into the function so that operations aren't duplicated.
+
+        :param all_costs: a list of the costs for each node
+        :param local_perturbation: the perturbation used in this node
+        :param perturbed_dimensions: the dimensions that were perturbed for this
+            iteration
+        :return: None, the centroid is updated in place
+        """
         for parent_num, rank in enumerate(np.argsort(all_costs)):
             if parent_num < self._num_parents:
+
+                # Compare best member and save if better than last
+                # Since this is the first in the loop, old_centroid
+                # will represent the original centroid, so we will copy
+                # members first and then apply perturbations later when they
+                # are generated
+                if (parent_num == 0) and (all_costs[rank]
+                                          <= self._running_best_cost):
+                    self._update_best_flag = True
+                    self._running_best_cost = all_costs[rank]
+                    self._running_best[:] = self._old_centroid
+
+                # Update the centroid with a weighted sum of perturbation based
+                # on cost
                 if rank == self._rank:
+
+                    # Update running best with local perturbation if it applies
+                    if self._update_best_flag and (parent_num == 0):
+                        self._running_best += local_perturbation
+                        self._update_best_flag = False
+
+                    # Update centroid with weighted local perturbation
                     local_perturbation *= self._weights[parent_num]
                     self._old_centroid[perturbed_dimensions] += local_perturbation
+
                 else:
                     perturbation = self._worker_rngs[rank].randn(
                         self._num_mutations)
-                    perturbation *= self._weights[parent_num] * self._step_size
+                    perturbation *= self._step_size
+
+                    # Apply generated perturbation to update running best
+                    if self._update_best_flag and (parent_num == 0):
+                        self._running_best += perturbation
+                        self._update_best_flag = False
+
+                    # Apply weights to this perturbation and update the centroid
+                    perturbation *= self._weights[parent_num]
                     self._old_centroid[perturbed_dimensions] += perturbation
+
             else:
                 if rank != self._rank:
                     self._worker_rngs[rank].randn(self._num_mutations)
@@ -119,9 +184,15 @@ class BasicES:
 
         self._score_history.append(costs)
 
-    def get_centroid(self):
+    @property
+    def centroid(self):
 
         return self._centroid.copy()
+
+    @property
+    def best(self):
+
+        return self._running_best.copy()
 
     def plot_cost_over_time(self, prefix='test', logy=True, savefile=False):
         """
@@ -160,6 +231,12 @@ class BasicES:
 
     @classmethod
     def load(cls, filename):
+        """
+        Load a pickled file. Note that the objective function and any other
+        non-picklable objects won't be saved.
+        :param filename: name of pickled file
+        :return: an evostrat object of this class
+        """
         pickled_obj_file = open(filename, 'rb')
         obj = pickle.load(pickled_obj_file)
         pickled_obj_file.close()
@@ -189,7 +266,10 @@ class BasicES:
                  "_worker_rngs": self._worker_rngs,
                  "_generation_number": self._generation_number,
                  "_score_history": self._score_history,
-                 "_centroid": self._centroid}
+                 "_centroid": self._centroid,
+                 "_running_best": self._running_best,
+                 "_running_best_cost": self._running_best_cost,
+                 "_update_best_flag": self._update_best_flag}
 
         return state
 
@@ -211,7 +291,10 @@ class BasicES:
 
 
 class BoundedBasicES(BasicES):
-
+    """
+    This is a BasicES that provides options for bounding the selection of
+    parameters so that they do not exceed some chosen bounds.
+    """
     def __init__(self, xo, step_size, bounds, **kwargs):
         super().__init__(xo, step_size, **kwargs)
 
@@ -386,7 +469,16 @@ class RandNumTableES(BasicES):
                               dimension_slices, perturbation_slices)
 
     def _reconstruct_perturbation(self, rank, master_dim_slices, parent_num):
+        """
+        Constructs the perturbation from other nodes given their rank (from
+        which the seed is determined). Also updates the old_centroid with
+        the weighted perturbation
 
+        :param rank: the rank of the node
+        :param master_dim_slices: the indices that everyone is mutating
+        :param parent_num: the member performance
+        :return: perturbation_slices
+        """
         perturbation_slices = self._draw_random_table_slices(
             self._worker_rngs[rank])
         dimension_slices, perturbation_slices = match_slices(
@@ -399,15 +491,31 @@ class RandNumTableES(BasicES):
         multi_slice_multiply(self._old_centroid, self._weights[parent_num],
                              dimension_slices)
 
+        return perturbation_slices, dimension_slices
+
     def _update_centroid(self, all_costs, master_dim_slices, local_dim_slices,
                          local_perturbation_slices):
         """
-        Adds an additional multiply operation to avoid creating a new
+        *Adds an additional multiply operation to avoid creating a new
         set of arrays for the slices. Not sure which would be faster
         """
         for parent_num, rank in enumerate(np.argsort(all_costs)):
             if parent_num < self._num_parents:
+                # Begin Update sequence for the running best if applicable
+                if (parent_num == 0) and (all_costs[rank]
+                                          <= self._running_best_cost):
+                    self._update_best_flag = True
+                    self._running_best_cost = all_costs[rank]
+                    # Since the best is always first, copy centroid elements
+                    self._running_best[:] = self._old_centroid
+
                 if rank == self._rank:
+
+                    # Update best for self ranks
+                    if (parent_num == 0) and self._update_best_flag:
+                        multi_slice_add(self._running_best, self._rand_num_table,
+                                        local_dim_slices, local_perturbation_slices)
+
                     multi_slice_divide(self._old_centroid, self._weights[parent_num],
                                        local_dim_slices)
                     multi_slice_add(self._old_centroid, self._rand_num_table,
@@ -416,7 +524,14 @@ class RandNumTableES(BasicES):
                                          local_dim_slices)
 
                 else:
-                    self._reconstruct_perturbation(rank, master_dim_slices, parent_num)
+                    perturbation_slices, dimension_slices = \
+                        self._reconstruct_perturbation(rank, master_dim_slices,
+                                                       parent_num)
+
+                    # Apply update best for non-self ranks
+                    if (parent_num == 0) and self._update_best_flag:
+                        multi_slice_add(self._running_best, self._rand_num_table,
+                                        dimension_slices, perturbation_slices)
 
             else:
                 if rank != self._rank:
@@ -435,7 +550,7 @@ class BoundedRandNumTableES(RandNumTableES):
     windows at each iteration and the need to rescale the entire array
     rather than a subset. This is because the search needs to happen in the 
     folded real space (which gets folded onto (0,1)), but the objective needs 
-    the rescaled space.
+    the rescaled space. I think I left it out for now, may add in the future
     """
 
     def __init__(self, xo, step_size, bounds, **kwargs):
@@ -548,7 +663,7 @@ class BoundedRandNumTableES(RandNumTableES):
     def _update_centroid(self, all_costs, master_dim_slices, local_dim_slices,
                          local_perturbation_slices):
         """
-        Adds an additional multiply opperation to avoid creating a new
+        Adds an additional multiply operation to avoid creating a new
         set of arrays for the slices. Not sure which would be faster
 
         Boundaries are clipped again at the end, to make sure the parameters in
@@ -557,7 +672,21 @@ class BoundedRandNumTableES(RandNumTableES):
         """
         for parent_num, rank in enumerate(np.argsort(all_costs)):
             if parent_num < self._num_parents:
+                # Begin Update sequence for the running best if applicable
+                if (parent_num == 0) and (all_costs[rank]
+                                          <= self._running_best_cost):
+                    self._update_best_flag = True
+                    self._running_best_cost = all_costs[rank]
+                    # Since the best is always first, copy centroid elements
+                    self._running_best[:] = self._old_centroid
+
                 if rank == self._rank:
+
+                    # Update best for self ranks
+                    if (parent_num == 0) and self._update_best_flag:
+                        multi_slice_add(self._running_best, self._rand_num_table,
+                                        local_dim_slices, local_perturbation_slices)
+
                     multi_slice_divide(self._old_centroid, self._weights[parent_num],
                                        local_dim_slices)
                     multi_slice_add(self._old_centroid, self._rand_num_table,
@@ -566,7 +695,14 @@ class BoundedRandNumTableES(RandNumTableES):
                                          local_dim_slices)
 
                 else:
-                    self._reconstruct_perturbation(rank, master_dim_slices, parent_num)
+                    perturbation_slices, dimension_slices = \
+                        self._reconstruct_perturbation(rank, master_dim_slices,
+                                                       parent_num)
+
+                    # Apply update best for non-self ranks
+                    if (parent_num == 0) and self._update_best_flag:
+                        multi_slice_add(self._running_best, self._rand_num_table,
+                                        dimension_slices, perturbation_slices)
 
             else:
                 if rank != self._rank:
