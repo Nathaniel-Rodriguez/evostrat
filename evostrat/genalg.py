@@ -156,14 +156,14 @@ class BasicGA:
         :param kwargs: key word arguments for additional objective parameters
         :return: None
         """
-        if kwargs is None:
-            kwargs = {}
-
-        if (self.objective is not None) and (objective is None):
-            objective = self.objective
-            kwargs = self.obj_kwargs
+        if objective is not None:
+            if kwargs is None:
+                kwargs = {}
         elif (self.objective is None) and (objective is None):
             raise AttributeError("Error: No objective defined")
+        else:
+            objective = self.objective
+            kwargs = self.obj_kwargs
 
         partial_objective = partial(objective, **kwargs)
         for i in range(num_iterations):
