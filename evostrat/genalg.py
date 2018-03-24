@@ -3,6 +3,7 @@ import pickle
 import random
 from functools import partial
 from .sliceops import *
+import copy
 
 
 def real_member_generator(rng, size, bounds):
@@ -69,6 +70,12 @@ class BasicGA:
     in the mutation_function and are not part of the GA itself. These
     can be provided as mutation_function_args, or a partial function can be
     passed to the GA
+    
+    Following the run, the properties best, costs, and population can be
+    accessed by rank==0 (or whatever object is loaded after saving).
+    If the object is reloaded then member_generating_function and
+    mutation_function properties need to be set (since functions can't be
+    pickled) before best and population can be accessed.
     """
 
     def __init__(self, member_generating_function, mutation_function,
@@ -143,11 +150,92 @@ class BasicGA:
         self._seed_rng = np.random.RandomState(self._seed_seed_list[self._rank])
 
         self._generation_number = 0
-        self._score_history = []
+        self._cost_history = []
         self._member_genealogy = [self._initial_seed_list[self._rank]]
         # print("first genealogy:", self._rank, self._member_genealogy)  ########################
         self._member = self._make_member(self._mutation_rng,
                                          self._member_genealogy)
+        self._population_genealogy = [[] for i in range(self._size)]
+
+    @property
+    def member_generating_function(self):
+        """
+        :return: Partial version of member generating function
+        """
+        return self._member_generating_function
+
+    @member_generating_function.setter
+    def member_generating_function(self, args):
+        try:
+            value, kwargs = args
+        except ValueError:
+            raise ValueError("Pass an iterable with two items (function, kwargs)")
+
+        if kwargs is None:
+            kwargs = {}
+
+        self._member_generating_function = partial(value, **kwargs)
+
+    @property
+    def mutation_function(self):
+        """
+        :return: Partial version of mutation function
+        """
+        return self._mutation_function
+
+    @mutation_function.setter
+    def mutation_function(self, args):
+        try:
+            value, kwargs = args
+        except ValueError:
+            raise ValueError("Pass an iterable with two items (function, kwargs)")
+
+        if kwargs is None:
+            kwargs = {}
+
+        self._mutation_function = partial(value, **kwargs)
+
+    @property
+    def best(self):
+        """
+        :return: generates and returns the best member of the population.
+            Only Rank==0 should be accessing this property.
+        """
+
+        try:
+            return self._make_member(self._mutation_rng,
+                                     self._population_genealogy[
+                                         np.argsort(self._cost_history[-1])[0]])
+        except IndexError:
+            raise IndexError("No score or population genealogy from which"
+                             "to generate best. Run optimization first.")
+        except TypeError:
+            raise TypeError("Need to set mutation and member generating functions")
+
+    @property
+    def population(self):
+        """
+        :return: a list of all members of the current population.
+            Only Rank==0 should be accessing this property.
+        """
+
+        try:
+            return [self._make_member(self._mutation_rng, member)
+                    for member in self._population_genealogy]
+        except IndexError:
+            raise IndexError("No score or population genealogy"
+                             "Run optimization first.")
+        except TypeError:
+            raise TypeError("Need to set mutation and member generating functions")
+
+    @property
+    def costs(self):
+        """
+        :return: scores of all members of the current population. In same order
+            as population list. Only Rank==0 should be accessing this property.
+        """
+
+        return self._cost_history[-1].copy()
 
     def __call__(self, num_iterations, objective=None, kwargs=None):
         """
@@ -172,6 +260,29 @@ class BasicGA:
             self._update(partial_objective)
             self._generation_number += 1
 
+        self._share_genealogy()
+
+    def _share_genealogy(self):
+        """
+        It is difficult to track the population due to the nature of this
+        distributed algorithm. It is more efficient to wait until the end of
+        the optimization period to share all of the genealogies so that
+        all nodes know what the populations are. This allows the generation
+        of the final population and the best member in it.
+
+        ONLY THE RANK==0 member of the population gets the genealogies as
+        that is the only one that is saved after pickling. Doing this reduces
+        the send operations from N^2 to N. Also, there isn't much that should
+        be done over MPI once the optimization is complete.
+
+        This function will allow the use of the best and population properties.
+
+        :return: None, it fills the _population_genealogy list
+        """
+
+        self._population_genealogy = self._comm.gather(self._member_genealogy,
+                                                       root=0)
+
     def _make_member(self, rng, seed_list):
         """
         Creates a member of the population for this rank
@@ -187,7 +298,7 @@ class BasicGA:
 
     def _update_log(self, costs):
 
-        self._score_history.append(costs)
+        self._cost_history.append(costs)
 
     def _update(self, objective):
 
@@ -300,7 +411,7 @@ class BasicGA:
         if self._rank == 0:
             import matplotlib.pyplot as plt
 
-            costs_by_generation = np.array(self._score_history)
+            costs_by_generation = np.array(self._cost_history)
             min_cost_by_generation = np.min(costs_by_generation, axis=1)
             mean_cost_by_generation = np.mean(costs_by_generation, axis=1)
 
@@ -381,9 +492,10 @@ class BasicGA:
                  "_mutation_rng": self._mutation_rng,
                  "_seed_rng": self._seed_rng,
                  "_generation_number": self._generation_number,
-                 "_score_history": self._score_history,
+                 "_cost_history": self._cost_history,
                  "_member_genealogy": self._member_genealogy,
-                 "_member": self._member}
+                 "_member": self._member,
+                 "_population_genealogy": self._population_genealogy}
 
         return state
 
