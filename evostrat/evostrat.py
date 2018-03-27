@@ -311,13 +311,23 @@ class BoundedBasicES(BasicES):
 
     @property
     def centroid(self):
-
-        return self._apply_bounds(self._centroid.copy())
+        """
+        Apply boundary conditions to the copied centroid
+        :return: 1D numpy array dtype=np.float32
+        """
+        centroid_return_copy = self._centroid.copy()
+        self._apply_bounds(centroid_return_copy)
+        return centroid_return_copy
 
     @property
     def best(self):
-
-        return self._apply_bounds(self._running_best.copy())
+        """
+        Apply boundary conditions to the copied best parameters
+        :return: 1D numpy array dtype=np.float32
+        """
+        best_return_copy = self._running_best.copy()
+        self._apply_bounds(best_return_copy)
+        return best_return_copy
 
     def _apply_bounds(self, search_values):
 
@@ -602,8 +612,9 @@ class BoundedRandNumTableES(RandNumTableES):
         Boundary conditions are applied to the centroid before returning
         :return: 1D array dtyp=np.float32
         """
-        return multi_slice_clip(self._centroid.copy(), self._lower_bounds,
-                                self._upper_bounds)
+        centroid_return_copy = self._centroid.copy()
+        self._apply_bounds(centroid_return_copy)
+        return centroid_return_copy
 
     @property
     def best(self):
@@ -611,8 +622,9 @@ class BoundedRandNumTableES(RandNumTableES):
         Boundary conditions are applied to the centroid before returning
         :return: 1D array dtyp=np.float32
         """
-        return multi_slice_clip(self._running_best.copy(), self._lower_bounds,
-                                self._upper_bounds)
+        best_return_copy = self._running_best.copy()
+        self._apply_bounds(best_return_copy)
+        return best_return_copy
 
     def _rescale_search_parameters(self, search_values, slice_list):
         """
@@ -645,7 +657,7 @@ class BoundedRandNumTableES(RandNumTableES):
         self._periodic_search_parameters(search_values, slice_list)
         self._rescale_search_parameters(search_values, slice_list)
 
-    def _apply_bounds(self, search_values, slice_list):
+    def _apply_bounds(self, search_values, slice_list=None):
 
         if self._boundary_type == "clip":
             multi_slice_clip(search_values, self._lower_bounds,
