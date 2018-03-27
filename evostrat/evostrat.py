@@ -309,6 +309,16 @@ class BoundedBasicES(BasicES):
         self._apply_bounds(self._centroid)
         self._old_centroid = self._centroid.copy()
 
+    @property
+    def centroid(self):
+
+        return self._apply_bounds(self._centroid.copy())
+
+    @property
+    def best(self):
+
+        return self._apply_bounds(self._running_best.copy())
+
     def _apply_bounds(self, search_values):
 
         if self._boundary_type == "clip":
@@ -586,6 +596,24 @@ class BoundedRandNumTableES(RandNumTableES):
         self._apply_bounds(self._centroid, [np.s_[:]])
         self._old_centroid = self._centroid.copy()
 
+    @property
+    def centroid(self):
+        """
+        Boundary conditions are applied to the centroid before returning
+        :return: 1D array dtyp=np.float32
+        """
+        return multi_slice_clip(self._centroid.copy(), self._lower_bounds,
+                                self._upper_bounds)
+
+    @property
+    def best(self):
+        """
+        Boundary conditions are applied to the centroid before returning
+        :return: 1D array dtyp=np.float32
+        """
+        return multi_slice_clip(self._running_best.copy(), self._lower_bounds,
+                                self._upper_bounds)
+
     def _rescale_search_parameters(self, search_values, slice_list):
         """
         Assuming values are in the range (0,1) this function rescales
@@ -621,7 +649,8 @@ class BoundedRandNumTableES(RandNumTableES):
 
         if self._boundary_type == "clip":
             multi_slice_clip(search_values, self._lower_bounds,
-                             self._upper_bounds, slice_list, slice_list, slice_list)
+                             self._upper_bounds, slice_list,
+                             slice_list, slice_list)
 
         else:
             raise NotImplementedError("Error: " + self._boundary_type +

@@ -140,23 +140,24 @@ def multi_slice_fabs(x1_inplace, x1_slices=()):
         np.fabs(x1_inplace, out=x1_inplace)
 
 
-def multi_slice_clip(x1_inplace, lower, upper, xslices, lslices=(), uslices=()):
+def multi_slice_clip(x1_inplace, lower, upper, xslices=None,
+                     lslices=None, uslices=None):
     """
     Does an inplace clip on x1
     """
 
-    if (len(lslices) == 0) or (len(uslices) == 0):
+    if (lslices is None) and (uslices is None) and (xslices is None):
+        np.clip(x1_inplace, lower, upper, out=x1_inplace)
+
+    elif (lslices is None) or (uslices is None) and (xslices is not None):
         for xslice in xslices:
             np.clip(x1_inplace[xslice], lower, upper, out=x1_inplace[xslice])
 
-    elif (len(lslices) != 0) and (len(uslices) != 0) \
-            and (len(lslices) == len(uslices)):
+    elif (lslices is not None) and (uslices is not None) \
+            and (len(lslices) == len(uslices) and (xslices is not None)):
         for i in range(len(xslices)):
             np.clip(x1_inplace[xslices[i]], lower[lslices[i]], upper[uslices[i]],
                     out=x1_inplace[xslices[i]])
-
-    elif (len(lslices) == 0) and (len(uslices) == 0) and (len(xslices) == 0):
-        np.clip(x1_inplace, lower, upper, out=x1_inplace)
 
     else:
         raise NotImplementedError("Invalid arguments in multi_slice_clip")
