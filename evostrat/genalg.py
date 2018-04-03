@@ -3,107 +3,24 @@ import pickle
 import random
 from functools import partial
 from .sliceops import *
-import copy
+from abc import ABC, abstractmethod
 
 
-def real_member_generator(rng, size, bounds):
+class BaseGA(ABC):
     """
-    Can be used with BasicGAs
-
-    Function that takes a numpy rng to generate a new member.
-    size: the size of the returned array
-    bounds: (low, high)
-
-    Draws from a uniform distribution between low and high.
-
-    :return 1d numpy float32 array that represents member
+    Contains basic members and functions common to derived GA classes
     """
 
-    return rng.uniform(bounds[0], bounds[1], size).astype(np.float32)
-
-
-def real_mutator(member, rng, scale):
-    """
-    Can be used with BasicGAs
-
-    :param member: a member to mutate
-    :param rng: a numpy randomState
-    :param scale: scale of normal mutation
-    :return: reference to member that is changed in-place
-    """
-
-    perturbation = rng.randn(member.size)
-    perturbation *= scale
-    member += perturbation
-
-    return member
-
-# TODO: I don't actually have anything that returns best!!!!!!!! Need to add
-class BasicGA:
-    """
-    A modular GA that requires a mutation and member generating function
-    Genotypes can be variable in length.
-    If the GA is ever saved and reloaded the member generating function
-    and mutation function and objective function need to be assigned again.
-    The former two have corresponding methods. The object can be set directly
-    when calling the GA (just as in the ES)
-
-    This GA maintains a list of seeds for each member of the population which
-    denotes its construction and mutation history. When members of the population
-    are replaced this list is transferred between nodes and new mutations under
-    the unique seed of that node are applied, branching the lineage of that
-    member.
-
-    MPI broadcasts remain isolated to the fitness function, but site2site
-    messages are sent between ranks that need a new member, which will be
-    drawn uniformly at random from available parents.
-
-    An elite fraction can be set which determines what fraction of the population
-    is withheld from mutation. The top best % of the population will go onto
-    the next unchanged.
-
-    The parent_fraction can be set which determines the selection strength.
-    The top parent_fraction of members will be retained, while the remaining
-    will be replaced with a uniform random draw of those that were successfull.
-
-    Mutation rate and other mutation related parameters must be specified
-    in the mutation_function and are not part of the GA itself. These
-    can be provided as mutation_function_args, or a partial function can be
-    passed to the GA
-    
-    Following the run, the properties best, costs, and population can be
-    accessed by rank==0 (or whatever object is loaded after saving).
-    If the object is reloaded then member_generating_function and
-    mutation_function properties need to be set (since functions can't be
-    pickled) before best and population can be accessed.
-    """
-
-    def __init__(self, member_generating_function, mutation_function,
-                 member_generating_function_kwargs=None,
-                 mutation_function_kwargs=None,
-                 **kwargs):
+    def __init__(self, **kwargs):
         """
-        member_generating_function: a function that takes a numpy RNG as an
-            argument and will return a np.float32 array that can be passed to
-            the fitness function. E.g:
-                new_member = f(rng, *args)
-
-        mutation_function: a function that takes a population member and numpy
-            RNG as an argument and will return a np.float32 array. If desired
-            the new member can be a reference to a modified version of the
-            input member, resulting in an inplace change. E.g:
-                new_member = f(member, rng, *args)
-
-        member_generating_function_args: if a partial function isn't given
-            then one is made with the arguments passed here
-
-        mutation_function_args: if a partial function isn't given then one is
-            made with the arguments passed here
-
-        elite_fraction: the fraction of members to withhold from mutation
-        parent_fraction: the fraction of the population to maintain. remaining
-            members are culled and replaced with more successful parents.
-            This is the selection process.
+        :param objective:
+        :param obj_kwargs:
+        :param verbose:
+        :param parent_fraction:
+        :param num_parents:
+        :param elite_fraction:
+        :param num_elite:
+        :param seed:
         """
 
         # Initiate MPI
@@ -113,31 +30,29 @@ class BasicGA:
         self._size = self._comm.Get_size()
         self._rank = self._comm.Get_rank()
 
-        # Assign properties
-        if member_generating_function_kwargs is None:
-            member_generating_function_kwargs = {}
-
-        if mutation_function_kwargs is None:
-            mutation_function_kwargs = {}
-
-        self._member_generating_function = partial(member_generating_function,
-                                                   **member_generating_function_kwargs)
-        self._mutation_function = partial(mutation_function, **mutation_function_kwargs)
-
         self.objective = kwargs.get('objective', None)
         self.obj_kwargs = kwargs.get('obj_kwargs', {})
-        self._parent_fraction = kwargs.get('parent_fraction', 0.3)
-        self._num_parents = int(self._size * self._parent_fraction)
-        # if self._rank == 0: #################
-        #     print("num_parents:",self._rank, self._num_parents) ########################
         self._verbose = kwargs.get('verbose', False)
-        self._elite_fraction = kwargs.get('elite_fraction', 0.1)
-        self._num_elite = int(self._size * self._elite_fraction)
-        # if self._rank == 0: ##########
-        #     print("num_elite:",self._rank, self._num_elite)  ########################
-        assert(self._num_elite < self._num_parents)
-
         self._max_seed = 2 ** 32 - 1
+
+        if 'parent_fraction' in kwargs:
+            self._parent_fraction = kwargs.get('parent_fraction', 0.3)
+            self._num_parents = int(self._size * self._parent_fraction)
+        elif 'num_parents' in kwargs:
+            self._num_parents = kwargs.get('num_parents', int(self._size / 2))
+            self._parent_fraction = self._num_parents / self._size
+
+        if 'elite_fraction' in kwargs:
+            self._elite_fraction = kwargs.get('elite_fraction', 0.1)
+            self._num_elite = int(self._size * self._elite_fraction)
+        elif 'num_elite' in kwargs:
+            self._num_elite = kwargs.get('num_elite', 1)
+            self._elite_fraction = self._num_elite / self._size
+
+        if self._num_elite < self._num_parents:
+            raise AssertionError("Number of elite has to be less than the"
+                                 " number of parents")
+
         self._global_seed = kwargs.get('seed', 1)
         self._py_rng = random.Random(self._global_seed)
         self._global_rng = np.random.RandomState(self._global_seed)
@@ -145,55 +60,71 @@ class BasicGA:
                                                       self._size)
         self._seed_seed_list = self._py_rng.sample(range(self._max_seed),
                                                    self._size)
-        self._mutation_rng = np.random.RandomState(
-            self._initial_seed_list[self._rank])
+        self._mutation_rng = np.random.RandomState(self._initial_seed_list[self._rank])
         self._seed_rng = np.random.RandomState(self._seed_seed_list[self._rank])
 
         self._generation_number = 0
         self._cost_history = []
         self._member_genealogy = [self._initial_seed_list[self._rank]]
-        # print("first genealogy:", self._rank, self._member_genealogy)  ########################
         self._member = self._make_member(self._mutation_rng,
                                          self._member_genealogy)
         self._population_genealogy = [[] for i in range(self._size)]
 
-    @property
-    def member_generating_function(self):
+    def __call__(self, num_iterations, objective=None, kwargs=None):
         """
-        :return: Partial version of member generating function
+        :param num_iterations: how many generations it will run for
+        :param objective: a full or partial version of function
+        :param kwargs: key word arguments for additional objective parameters
+        :return: None
         """
-        return self._member_generating_function
+        if objective is not None:
+            if kwargs is None:
+                kwargs = {}
+        elif (self.objective is None) and (objective is None):
+            raise AttributeError("Error: No objective defined")
+        else:
+            objective = self.objective
+            kwargs = self.obj_kwargs
 
-    @member_generating_function.setter
-    def member_generating_function(self, args):
-        try:
-            value, kwargs = args
-        except ValueError:
-            raise ValueError("Pass an iterable with two items (function, kwargs)")
+        partial_objective = partial(objective, **kwargs)
+        for i in range(num_iterations):
+            if self._verbose and (self._rank == 0):
+                print("Generation:", self._generation_number)
+            self._update(partial_objective)
+            self._generation_number += 1
 
-        if kwargs is None:
-            kwargs = {}
+        self._share_genealogy()
 
-        self._member_generating_function = partial(value, **kwargs)
-
-    @property
-    def mutation_function(self):
+    @abstractmethod
+    def member_generator(self, rng):
         """
-        :return: Partial version of mutation function
+        Creates a new member and returns it.
+        :param rng: a numpy random number generator
+        :return: a new member
         """
-        return self._mutation_function
+        pass
 
-    @mutation_function.setter
-    def mutation_function(self, args):
-        try:
-            value, kwargs = args
-        except ValueError:
-            raise ValueError("Pass an iterable with two items (function, kwargs)")
+    @abstractmethod
+    def mutator(self, member, rng):
+        """
+        Mutates the member in place or returns a new one. If mutated in-place,
+        return the reference.
+        :param member: Reference to member
+        :param rng: a numpy random number generator
+        :return: Reference to member or new member
+        """
+        pass
 
-        if kwargs is None:
-            kwargs = {}
-
-        self._mutation_function = partial(value, **kwargs)
+    @abstractmethod
+    def _update(self, objective):
+        """
+        Method that updates the genetic algorithm using the objective.
+        The objective is a partial function created from whatever kwargs were
+        given either upon instantiation of object or __call__
+        :param objective: partial objective
+        :return: None
+        """
+        pass
 
     @property
     def best(self):
@@ -237,30 +168,17 @@ class BasicGA:
 
         return self._cost_history[-1].copy()
 
-    def __call__(self, num_iterations, objective=None, kwargs=None):
+    def _make_member(self, rng, seed_list):
         """
-        :param num_iterations: how many generations it will run for
-        :param objective: a full or partial version of function
-        :param kwargs: key word arguments for additional objective parameters
-        :return: None
+        Creates a member of the population for this rank
         """
-        if objective is not None:
-            if kwargs is None:
-                kwargs = {}
-        elif (self.objective is None) and (objective is None):
-            raise AttributeError("Error: No objective defined")
-        else:
-            objective = self.objective
-            kwargs = self.obj_kwargs
 
-        partial_objective = partial(objective, **kwargs)
-        for i in range(num_iterations):
-            if self._verbose and (self._rank == 0):
-                print("Generation:", self._generation_number)
-            self._update(partial_objective)
-            self._generation_number += 1
-
-        self._share_genealogy()
+        rng.seed(seed_list[0])
+        new_member = self.member_generator(rng)
+        for seed in seed_list[1:]:
+            rng.seed(seed)
+            new_member = self.mutator(new_member, rng)
+        return new_member
 
     def _share_genealogy(self):
         """
@@ -283,61 +201,9 @@ class BasicGA:
         self._population_genealogy = self._comm.gather(self._member_genealogy,
                                                        root=0)
 
-    def _make_member(self, rng, seed_list):
-        """
-        Creates a member of the population for this rank
-        """
-
-        rng.seed(seed_list[0])
-        new_member = self._member_generating_function(rng)
-        for seed in seed_list[1:]:
-            rng.seed(seed)
-            new_member = self._mutation_function(new_member, rng)
-        # print("\tmake_member:", self._generation_number, self._rank, seed_list, new_member)  ########################
-        return new_member
-
     def _update_log(self, costs):
 
         self._cost_history.append(costs)
-
-    def _update(self, objective):
-
-        # determine fitness and broadcast
-        local_cost = np.empty(1, dtype=np.float32)
-        local_cost[0] = objective(self._member)
-        all_costs = np.empty(self._size, dtype=np.float32)
-        self._comm.Allgather([local_cost, self._MPI.FLOAT],
-                             [all_costs, self._MPI.FLOAT])
-        self._update_log(all_costs)
-        # print("\tcost:", self._generation_number, self._rank, local_cost, self._member)  ########################
-        # Apply mutations, elite selection, and broadcast genealogies
-        self._update_population(all_costs)
-
-    def _chose_random_rank_by_performance(self, l2g_ranks):
-        """
-        picks randomly one of the ranks which has a member with cost in the
-        bottom _num_parents
-        """
-        best_ranks = l2g_ranks[:self._num_parents]
-        return self._global_rng.choice(best_ranks)
-
-    def _construct_message_list(self, l2g_ranks):
-        """
-        Builds a list of tuples with (send_rank, recv_rank) pairs
-        Every rank must participate in building this so the global_rng
-        stays in sync with everyone and so that everyone has the same
-        messenger list
-        """
-
-        messenger_list = []
-        # For the rejects, pick a random parent to copy
-        for parent_num, rank in enumerate(l2g_ranks):
-            if parent_num >= self._num_parents:
-                # randomly pick who to copy from higher rank members
-                chosen_rank = self._chose_random_rank_by_performance(l2g_ranks)
-                messenger_list.append((chosen_rank, rank))
-
-        return messenger_list
 
     def _dispatch_messages(self, messenger_list):
         """
@@ -365,43 +231,6 @@ class BasicGA:
             if self._rank == messenger[1]:
                 self._member = self._make_member(self._mutation_rng,
                                                  self._member_genealogy)
-
-    def _mutate_population(self, l2g_ranks):
-        """
-        Preserve the top _num_elite members, mutate the rest
-        """
-        for parent_num, rank in enumerate(l2g_ranks):
-            if parent_num >= self._num_elite:
-                if rank == self._rank:
-                    # draw mutation seed
-                    seed = self._mutation_rng.randint(0, self._max_seed)
-                    self._member_genealogy.append(seed)
-
-                    # apply mutation
-                    self._mutation_rng.seed(seed)
-                    self._member = self._mutation_function(self._member,
-                                                           self._mutation_rng)
-
-    def _update_population(self, all_costs):
-        """
-        determines the cost ranking of all the costs for each node(rank) and
-        then determines which ranks need new members, which are randomly
-        selected and sent from the set of surviving members.
-        Then all members except for the elite are mutated.
-        """
-
-        # argsort returns the indexes of all_costs that would sort the array
-        # This means the first value is the highest performing rank while the
-        # last value is the lowest performing rank
-        l2g_ranks = np.argsort(all_costs)
-        messenger_list = self._construct_message_list(l2g_ranks)
-        # if self._rank == 0: ###############################
-        #     print("\t\torder:", self._generation_number, all_costs, l2g_ranks)  ########################
-        #     print("\t\tmessages:", messenger_list) ###################
-
-        self._dispatch_messages(messenger_list)
-        self._construct_received_members(messenger_list)
-        self._mutate_population(l2g_ranks)
 
     def plot_cost_over_time(self, prefix='test', logy=True, savefile=False):
         """
@@ -437,27 +266,6 @@ class BasicGA:
             else:
                 plt.show()
                 plt.clf()
-
-    def assign_member_generating_function(self, member_generating_function, kwargs=None):
-        """
-        If a GA is reloaded it needs to be reassigned a member generating
-        function. Use this method to do so.
-        """
-        if kwargs is None:
-            kwargs = {}
-
-        self._member_generating_function = partial(member_generating_function,
-                                                   **kwargs)
-
-    def assign_mutation_function(self, mutation_function, kwargs=None):
-        """
-        If a GA is reloaded it needs to be reassigned a mutation function.
-        Use this method to do so.
-        """
-        if kwargs is None:
-            kwargs = {}
-
-        self._mutation_function = partial(mutation_function, **kwargs)
 
     @classmethod
     def load(cls, filename):
@@ -510,18 +318,184 @@ class BasicGA:
         self._comm = MPI.COMM_WORLD
         self._size = self._comm.Get_size()
         self._rank = self._comm.Get_rank()
-        self._member_generating_function = None
-        self._mutation_function = None
         self.objective = None
         self.obj_args = None
+
+
+class BasicGA(BaseGA):
+    """
+    A modular GA that requires a mutation size (sigma), member size, and
+    bounds for member initialization.
+
+    If the GA is ever saved and reloaded the objective function needs to be
+    assigned again.
+
+    This GA maintains a list of seeds for each member of the population which
+    denotes its construction and mutation history. When members of the population
+    are replaced this list is transferred between nodes and new mutations under
+    the unique seed of that node are applied, branching the lineage of that
+    member.
+
+    MPI broadcasts remain isolated to the fitness function, but site2site
+    messages are sent between ranks that need a new member, which will be
+    drawn uniformly at random from available parents.
+
+    An elite fraction can be set which determines what fraction of the population
+    is withheld from mutation. The top best % of the population will go onto
+    the next unchanged.
+
+    The parent_fraction can be set which determines the selection strength.
+    The top parent_fraction of members will be retained, while the remaining
+    will be replaced with a uniform random draw of those that were successfull.
+
+    Following the run, the properties best, costs, and population can be
+    accessed by rank==0 (or whatever object is loaded after saving).
+    If the object is reloaded then member_generating_function and
+    mutation_function properties need to be set (since functions can't be
+    pickled) before best and population can be accessed.
+    """
+
+    def __init__(self, sigma, member_size, member_draw_bounds, **kwargs):
+        """
+        :param sigma: the standard deviation of the normal distribution of
+            perturbations applied as mutations
+        :param member_size: the number of parameters for each member
+        :param member_draw_bounds: the low/high boundaries for the initial
+            draw of parameters for a member. e.g. (-1.0, 1.0)
+        :param elite_fraction: the fraction of members to withhold from mutation
+        :param parent_fraction: the fraction of the population to maintain. remaining
+            members are culled and replaced with more successful parents.
+            This is the selection process.
+        """
+
+        super().__init__(**kwargs)
+        self._sigma = sigma
+        self._member_size = member_size
+        self._member_draw_bounds = member_draw_bounds
+
+    def member_generator(self, rng):
+        """
+        Can be used with BasicGAs
+
+        Function that takes a numpy rng to generate a new member.
+        :param rng: a numpy random number generator
+        :param size: the size of the returned array
+        :param bounds: (low, high)
+
+        Draws from a uniform distribution between low and high.
+
+        :return 1d numpy float32 array that represents member
+        """
+
+        return rng.uniform(self._member_draw_bounds[0],
+                           self._member_draw_bounds[1],
+                           self._member_size).astype(np.float32)
+
+    def mutator(self, member, rng):
+        """
+        Can be used with BasicGAs
+
+        :param member: a member to mutate
+        :param rng: a numpy randomState
+        :return: reference to member that is changed in-place
+        """
+
+        perturbation = rng.randn(member.size)
+        perturbation *= self._sigma
+        member += perturbation
+
+        return member
+
+    def _update(self, objective):
+        """
+        Updates the population
+        :param objective: a partial function, takes only parameters as input
+        :return: None
+        """
+        # determine fitness and broadcast
+        local_cost = np.empty(1, dtype=np.float32)
+        local_cost[0] = objective(self._member)
+        all_costs = np.empty(self._size, dtype=np.float32)
+        self._comm.Allgather([local_cost, self._MPI.FLOAT],
+                             [all_costs, self._MPI.FLOAT])
+        self._update_log(all_costs)
+        # Apply mutations, elite selection, and broadcast genealogies
+        self._update_population(all_costs)
+
+    def _chose_random_rank_by_performance(self, l2g_ranks):
+        """
+        picks randomly one of the ranks which has a member with cost in the
+        bottom _num_parents
+        """
+        best_ranks = l2g_ranks[:self._num_parents]
+        return self._global_rng.choice(best_ranks)
+
+    def _construct_message_list(self, l2g_ranks):
+        """
+        Builds a list of tuples with (send_rank, recv_rank) pairs
+        Every rank must participate in building this so the global_rng
+        stays in sync with everyone and so that everyone has the same
+        messenger list
+        """
+
+        messenger_list = []
+        # For the rejects, pick a random parent to copy
+        for parent_num, rank in enumerate(l2g_ranks):
+            if parent_num >= self._num_parents:
+                # randomly pick who to copy from higher rank members
+                chosen_rank = self._chose_random_rank_by_performance(l2g_ranks)
+                messenger_list.append((chosen_rank, rank))
+
+        return messenger_list
+
+    def _mutate_population(self, l2g_ranks):
+        """
+        Preserve the top _num_elite members, mutate the rest
+        """
+        for parent_num, rank in enumerate(l2g_ranks):
+            if parent_num >= self._num_elite:
+                if rank == self._rank:
+                    # draw mutation seed
+                    seed = self._mutation_rng.randint(0, self._max_seed)
+                    self._member_genealogy.append(seed)
+
+                    # apply mutation
+                    self._mutation_rng.seed(seed)
+                    self._member = self.mutator(self._member,
+                                                self._mutation_rng)
+
+    def _update_population(self, all_costs):
+        """
+        determines the cost ranking of all the costs for each node(rank) and
+        then determines which ranks need new members, which are randomly
+        selected and sent from the set of surviving members.
+        Then all members except for the elite are mutated.
+        """
+
+        # argsort returns the indexes of all_costs that would sort the array
+        # This means the first value is the highest performing rank while the
+        # last value is the lowest performing rank
+        l2g_ranks = np.argsort(all_costs)
+        messenger_list = self._construct_message_list(l2g_ranks)
+
+        self._dispatch_messages(messenger_list)
+        self._construct_received_members(messenger_list)
+        self._mutate_population(l2g_ranks)
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_sigma"] = self._sigma
+        state["_member_size"] = self._member_size
+        state["_member_draw_bounds"] = self._member_draw_bounds
+
+        return state
 
 
 class BoundedBasicGA(BasicGA):
     """
     A BasicGA with bounds.
     """
-    def __init__(self, member_generating_function, mutation_function,
-                 bounds, **kwargs):
+    def __init__(self, **kwargs):
         """
         member_generating_function: a function that takes a numpy RNG and table
             as an argument and will return a np.float32 array that can be passed
@@ -533,30 +507,30 @@ class BoundedBasicGA(BasicGA):
         pass
 
 
-class RandNumTableGA(BasicGA):
+class RandNumTableGA(BaseGA):
     """
-    A basic GA that uses a chached random number table. This speeds up
+    A basic GA that uses a cached random number table. This speeds up
     the mutation process considerably at the cost of memory. By using a table
     the algorithm can be made several times faster as random number generation
     is expensive.
 
-    The member_generating_function and mutation_function must take an additional
-    argument, called 'table' which will be a reference to the float32 random
-    number table. I encourage using slices from sliceops to draw random
-    segments from this table as values.
-
     The table is a numpy array of normally distributed values: N(0,1).
     """
-    def __init__(self, member_generating_function, mutation_function, **kwargs):
+    def __init__(self, sigma, member_size, member_draw_bounds,
+                 rand_num_table_size, max_table_step, max_param_step, **kwargs):
         """
-        member_generating_function: a function that takes a numpy RNG and table
-            as an argument and will return a np.float32 array that can be passed
-            to the fitness function.
-        mutation_function: a function that takes a numpy RNG and table as an
-            argument and will return a np.float32 array that can be added to a
-            member to produce a mutation.
+        :param sigma: the standard deviation of mutation perturbations
+        :param member_size: number of parameters per member
+        :param member_draw_bounds: low/high of initial draw for member
+        :param rand_num_table_size: the number of elements in the random table
+        :param max_table_step: the maximum random stride for table slices
+        :param kwargs: parameters from BasicGA
         """
-        pass
+        super().__init__(**kwargs)
+
+        self._rand_num_table_size = kwargs.get("rand_num_table_size", 20000000)
+        self._rand_num_table = self._global_rng.randn(self._rand_num_table_size)
+        self._max_table_step = kwargs.get("max_table_step", 5)
 
 
 class BoundedRandNumTableGA(RandNumTableGA):
@@ -573,3 +547,5 @@ class BoundedRandNumTableGA(RandNumTableGA):
             argument and will return a np.float32 array that can be added to a
             member to produce a mutation.
         """
+
+        pass
