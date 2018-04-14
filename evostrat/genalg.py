@@ -4,6 +4,7 @@ import random
 from functools import partial
 from .sliceops import *
 from abc import ABC, abstractmethod
+from collections import Counter
 
 
 class BaseGA(ABC):
@@ -13,14 +14,13 @@ class BaseGA(ABC):
 
     def __init__(self, **kwargs):
         """
-        :param objective:
-        :param obj_kwargs:
-        :param verbose:
-        :param parent_fraction:
-        :param num_parents:
-        :param elite_fraction:
-        :param num_elite:
-        :param seed:
+        :param objective: the object function, returns a cost scalar
+        :param obj_kwargs: key word arguments of the objective function (default {})
+        :param verbose: True/False whether to print output (default False)
+        :param elite_fraction: fraction of best performing that go unmutated to
+            next generation (default 0.1)
+        :param num_elite: same as above, can set one or the other
+        :param seed: used to generate all seeds and random values (default: 1)
         """
 
         # Initiate MPI
@@ -35,13 +35,6 @@ class BaseGA(ABC):
         self._verbose = kwargs.get('verbose', False)
         self._max_seed = 2 ** 32 - 1
 
-        if 'parent_fraction' in kwargs:
-            self._parent_fraction = kwargs.get('parent_fraction', 0.3)
-            self._num_parents = int(self._size * self._parent_fraction)
-        elif 'num_parents' in kwargs:
-            self._num_parents = kwargs.get('num_parents', int(self._size / 2))
-            self._parent_fraction = self._num_parents / self._size
-
         if 'elite_fraction' in kwargs:
             self._elite_fraction = kwargs.get('elite_fraction', 0.1)
             self._num_elite = int(self._size * self._elite_fraction)
@@ -49,9 +42,8 @@ class BaseGA(ABC):
             self._num_elite = kwargs.get('num_elite', 1)
             self._elite_fraction = self._num_elite / self._size
 
-        if self._num_elite < self._num_parents:
-            raise AssertionError("Number of elite has to be less than the"
-                                 " number of parents")
+        self._generation_number = 0
+        self._cost_history = []
 
         self._global_seed = kwargs.get('seed', 1)
         self._py_rng = random.Random(self._global_seed)
@@ -62,9 +54,6 @@ class BaseGA(ABC):
                                                    self._size)
         self._mutation_rng = np.random.RandomState(self._initial_seed_list[self._rank])
         self._seed_rng = np.random.RandomState(self._seed_seed_list[self._rank])
-
-        self._generation_number = 0
-        self._cost_history = []
         self._member_genealogy = [self._initial_seed_list[self._rank]]
         self._member = self._make_member(self._mutation_rng,
                                          self._member_genealogy)
@@ -115,16 +104,23 @@ class BaseGA(ABC):
         """
         pass
 
-    @abstractmethod
     def _update(self, objective):
         """
         Method that updates the genetic algorithm using the objective.
         The objective is a partial function created from whatever kwargs were
         given either upon instantiation of object or __call__
-        :param objective: partial objective
+        :param objective: a partial function, takes only parameters as input
         :return: None
         """
-        pass
+        # determine fitness and broadcast
+        local_cost = np.empty(1, dtype=np.float32)
+        local_cost[0] = objective(self._member)
+        all_costs = np.empty(self._size, dtype=np.float32)
+        self._comm.Allgather([local_cost, self._MPI.FLOAT],
+                             [all_costs, self._MPI.FLOAT])
+        self._update_log(all_costs)
+        # Apply mutations, elite selection, and broadcast genealogies
+        self._update_population(all_costs)
 
     @property
     def best(self):
@@ -178,6 +174,7 @@ class BaseGA(ABC):
         for seed in seed_list[1:]:
             rng.seed(seed)
             new_member = self.mutator(new_member, rng)
+
         return new_member
 
     def _share_genealogy(self):
@@ -231,6 +228,58 @@ class BaseGA(ABC):
             if self._rank == messenger[1]:
                 self._member = self._make_member(self._mutation_rng,
                                                  self._member_genealogy)
+
+    @abstractmethod
+    def _construct_message_list(self, l2g_ranks):
+        """
+        Builds a list of tuples with (send_rank, recv_rank) pairs
+        Every rank must participate in building this so the global_rng
+        stays in sync with everyone and so that everyone has the same
+        messenger list.
+
+        Construct message should carry out member selection from the l2g_ranks
+        list. Therefore, this function should define the algorithms selecion
+        or replacement method.
+
+        :param l2g_ranks: A list of ranks sorted by cost. This means the first
+            value is the highest performing rank while the last value is the
+            lowest performing rank.
+        :return: A list of messages
+        """
+        pass
+
+    def _update_population(self, all_costs):
+        """
+        determines the cost ranking of all the costs for each node(rank) and
+        then determines which ranks need new members, which are randomly
+        selected and sent from the set of surviving members.
+        Then all members except for the elite are mutated.
+        """
+
+        # argsort returns the indexes of all_costs that would sort the array
+        # This means the first value is the highest performing rank while the
+        # last value is the lowest performing rank
+        l2g_ranks = np.argsort(all_costs)
+        messenger_list = self._construct_message_list(l2g_ranks)
+        self._dispatch_messages(messenger_list)
+        self._construct_received_members(messenger_list)
+        self._mutate_population(l2g_ranks)
+
+    def _mutate_population(self, l2g_ranks):
+        """
+        Preserve the top _num_elite members, mutate the rest
+        """
+        for cost_index, rank in enumerate(l2g_ranks):
+            if cost_index >= self._num_elite:
+                if rank == self._rank:
+                    # draw mutation seed
+                    seed = self._mutation_rng.randint(0, self._max_seed)
+                    self._member_genealogy.append(seed)
+
+                    # apply mutation
+                    self._mutation_rng.seed(seed)
+                    self._member = self.mutator(self._member,
+                                                self._mutation_rng)
 
     def plot_cost_over_time(self, prefix='test', logy=True, savefile=False):
         """
@@ -286,9 +335,7 @@ class BaseGA(ABC):
 
     def __getstate__(self):
 
-        state = {"_num_parents": self._num_parents,
-                 "_parent_fraction": self._parent_fraction,
-                 "_verbose": self._verbose,
+        state = {"_verbose": self._verbose,
                  "_elite_fraction": self._elite_fraction,
                  "_num_elite": self._num_elite,
                  "_max_seed": self._max_seed,
@@ -322,7 +369,193 @@ class BaseGA(ABC):
         self.obj_args = None
 
 
-class BasicGA(BaseGA):
+class TruncatedGA(ABC, BaseGA):
+    """
+    Truncated selection works be selection the top # parents members and then
+    replacing all other members with a uniform random draw from those top
+    members.
+
+    This introduces a new parameter: parent_fraction (num_parents)
+    The smaller the num_parents, the string the selective force, as fewer members
+    are preserved.
+    """
+    def __init__(self, **kwargs):
+        """
+        :param parent_fraction: fraction of number of members that will be
+            parents for the truncated selection
+        :param num_parents: see above (can be set instead of parent_fraction,
+            only set one or the other)
+        :param kwargs: BaseGA kwargs
+        """
+        super().__init__(**kwargs)
+
+        if 'parent_fraction' in kwargs:
+            self._parent_fraction = kwargs.get('parent_fraction', 0.3)
+            self._num_parents = int(self._size * self._parent_fraction)
+        elif 'num_parents' in kwargs:
+            self._num_parents = kwargs.get('num_parents', int(self._size / 2))
+            self._parent_fraction = self._num_parents / self._size
+
+        if self._num_elite < self._num_parents:
+            raise AssertionError("Number of elite has to be less than the"
+                                 " number of parents")
+
+    def _chose_rank_by_performance(self, l2g_ranks):
+        """
+        picks randomly one of the ranks which has a member with cost in the
+        bottom _num_parents
+        """
+        best_ranks = l2g_ranks[:self._num_parents]
+        return self._global_rng.choice(best_ranks)
+
+    def _construct_message_list(self, l2g_ranks):
+        """
+        Builds a list of tuples with (send_rank, recv_rank) pairs
+        Every rank must participate in building this so the global_rng
+        stays in sync with everyone and so that everyone has the same
+        messenger list
+        """
+
+        messenger_list = []
+        # For the rejects, pick a random parent to copy
+        for cost_index, rank in enumerate(l2g_ranks):
+            # The higher the cost_index the lower performing the member
+            # If this exceeds the num_parents, then the member is chosen
+            # for replacement by a member of the parents (all low cost_index
+            # members)
+            if cost_index >= self._num_parents:
+                # randomly pick who to copy from higher rank members
+                chosen_rank = self._chose_rank_by_performance(l2g_ranks)
+                messenger_list.append((chosen_rank, rank))
+
+        return messenger_list
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_num_parents"] = self._num_parents
+        state["_parent_fraction"] = self._parent_fraction
+
+        return state
+
+
+class SusGA(ABC, BaseGA):
+    """
+    Implements stochastic universal sampling with linear rank-based selection.
+    """
+
+    def __init__(self, **kwargs):
+        """
+        :param kwargs: arguments for BaseGA
+        """
+        super().__init__(**kwargs)
+        self._ranks = range(self._size)
+        self._cost_rank_sum = self._size * (self._size + 1) / 2
+        self._number_to_select = self._size - self._num_elite
+
+    def linearly_scaled_member_rank(self, cost_index):
+        """
+        Scales the rank of an individual (cost_index)
+        :param cost_index: 1 is best
+        :return: scaled_cost_rank
+        """
+        return (self._size - cost_index) / self._cost_rank_sum
+
+    def sus(self, rng, sorted_ranks, selection_probabilities):
+        """
+        Implements SUS. Enforces elitism.
+        :param rng: a random number generator from which to determine the
+            selected individuals
+        :param sorted_ranks: a np.array of ranks that match the selection
+            probabilities. These should be sorted from least->greatest cost.
+        :param selection_probabilities: a list of selection probabilities for
+            each rank
+        :return: a list of selected members to replace the population
+        """
+
+        selected = list(sorted_ranks[:self._num_elite])
+        num_expected_copies = [probability * self._number_to_select
+                               for probability in selection_probabilities]
+        rv = rng.rand()
+        count = 0
+        for i in range(self._number_to_select):
+            count += num_expected_copies[i]
+            while rv < count:
+                rv += 1
+                selected.append(sorted_ranks[i])
+
+        return selected
+
+    def _member_selection(self, l2g_ranks):
+        """
+        Implements stochastic universal sampling and returns a list of
+        selected ranks and is the same size as the population. There can be
+        duplicate ranks which get selected more than once.
+
+        Elitism is enforced, as only N-num_elites are actually selected via SUS.
+
+        :param l2g_ranks: a numpy array from argsort which returns the indexes
+            of all_costs that would sort the array. This means the first value
+            is the highest performing rank while the last value is the lowest
+            performing rank.
+        :return: a list of selected ranks
+        """
+        selection_probabilities = [self.linearly_scaled_member_rank(cost_index)
+                                   for cost_index in l2g_ranks]
+
+        return self.sus(self._global_rng, l2g_ranks, selection_probabilities)
+
+    def match_remainder(self, selected_rank_list):
+        """
+        Creates a message list based on a list of selected ranks. First,
+        a matching process eliminates messaging between selected members and
+        ranks that already have that member, keeping only duplicates. These
+        duplicates represent the members that actually need copying between
+        ranks. A list of remaining ranks available for being copied too is
+        created and then assigned source ranks. This process prevents the issue
+        of having a member replaced when that member is still needed later.
+
+        :param selected_rank_list: list with ranks as elements
+        :return: a list of messages
+        """
+
+        # Remove matched ranks where no move is required
+        selected_rank_count = Counter(selected_rank_list)
+        selected_rank_count.subtract(self._ranks)
+        remaining_selected_ranks = [key for key in selected_rank_count.keys()
+                                    if selected_rank_count[key] > 0]
+        remaining_available_ranks = [key for key in selected_rank_count.keys()
+                                     if selected_rank_count[key] < 0]
+
+        # Create messages for remaining ranks
+        return [ (remaining_selected_ranks[i], remaining_available_ranks[i])
+                 for i in range(len(remaining_available_ranks))]
+
+    def _construct_message_list(self, l2g_ranks):
+        """
+        Builds a list of tuples with (send_rank, recv_rank) pairs
+        Every rank must participate in building this so the global_rng
+        stays in sync with everyone and so that everyone has the same
+        messenger list
+
+        Implements Rank-based Stochastic Universal Sampling
+        """
+
+        # Implement selection process
+        selected_rank_list = self._member_selection(l2g_ranks)
+
+        # Create messages from selected
+        return self.match_remainder(selected_rank_list)
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_ranks"] = self._ranks
+        state["_cost_rank_sum"] = self._cost_rank_sum
+        state["_number_to_select"] = self._number_to_select
+
+        return state
+
+
+class BasicGA(TruncatedGA):
     """
     A modular GA that requires a mutation size (sigma), member size, and
     bounds for member initialization.
@@ -365,7 +598,7 @@ class BasicGA(BaseGA):
         :param elite_fraction: the fraction of members to withhold from mutation
         :param parent_fraction: the fraction of the population to maintain. remaining
             members are culled and replaced with more successful parents.
-            This is the selection process.
+            This is the truncation selection process.
         """
 
         super().__init__(**kwargs)
@@ -379,8 +612,6 @@ class BasicGA(BaseGA):
 
         Function that takes a numpy rng to generate a new member.
         :param rng: a numpy random number generator
-        :param size: the size of the returned array
-        :param bounds: (low, high)
 
         Draws from a uniform distribution between low and high.
 
@@ -405,82 +636,6 @@ class BasicGA(BaseGA):
         member += perturbation
 
         return member
-
-    def _update(self, objective):
-        """
-        Updates the population
-        :param objective: a partial function, takes only parameters as input
-        :return: None
-        """
-        # determine fitness and broadcast
-        local_cost = np.empty(1, dtype=np.float32)
-        local_cost[0] = objective(self._member)
-        all_costs = np.empty(self._size, dtype=np.float32)
-        self._comm.Allgather([local_cost, self._MPI.FLOAT],
-                             [all_costs, self._MPI.FLOAT])
-        self._update_log(all_costs)
-        # Apply mutations, elite selection, and broadcast genealogies
-        self._update_population(all_costs)
-
-    def _chose_random_rank_by_performance(self, l2g_ranks):
-        """
-        picks randomly one of the ranks which has a member with cost in the
-        bottom _num_parents
-        """
-        best_ranks = l2g_ranks[:self._num_parents]
-        return self._global_rng.choice(best_ranks)
-
-    def _construct_message_list(self, l2g_ranks):
-        """
-        Builds a list of tuples with (send_rank, recv_rank) pairs
-        Every rank must participate in building this so the global_rng
-        stays in sync with everyone and so that everyone has the same
-        messenger list
-        """
-
-        messenger_list = []
-        # For the rejects, pick a random parent to copy
-        for parent_num, rank in enumerate(l2g_ranks):
-            if parent_num >= self._num_parents:
-                # randomly pick who to copy from higher rank members
-                chosen_rank = self._chose_random_rank_by_performance(l2g_ranks)
-                messenger_list.append((chosen_rank, rank))
-
-        return messenger_list
-
-    def _mutate_population(self, l2g_ranks):
-        """
-        Preserve the top _num_elite members, mutate the rest
-        """
-        for parent_num, rank in enumerate(l2g_ranks):
-            if parent_num >= self._num_elite:
-                if rank == self._rank:
-                    # draw mutation seed
-                    seed = self._mutation_rng.randint(0, self._max_seed)
-                    self._member_genealogy.append(seed)
-
-                    # apply mutation
-                    self._mutation_rng.seed(seed)
-                    self._member = self.mutator(self._member,
-                                                self._mutation_rng)
-
-    def _update_population(self, all_costs):
-        """
-        determines the cost ranking of all the costs for each node(rank) and
-        then determines which ranks need new members, which are randomly
-        selected and sent from the set of surviving members.
-        Then all members except for the elite are mutated.
-        """
-
-        # argsort returns the indexes of all_costs that would sort the array
-        # This means the first value is the highest performing rank while the
-        # last value is the lowest performing rank
-        l2g_ranks = np.argsort(all_costs)
-        messenger_list = self._construct_message_list(l2g_ranks)
-
-        self._dispatch_messages(messenger_list)
-        self._construct_received_members(messenger_list)
-        self._mutate_population(l2g_ranks)
 
     def __getstate__(self):
         state = super().__getstate__()
@@ -507,6 +662,86 @@ class BoundedBasicGA(BasicGA):
         pass
 
 
+class AnnealedBasicGA(BasicGA):
+    """
+    A version of the BasicGA that uses simulated annealing.
+    """
+
+    def __init__(self, sigma, member_size, member_draw_bounds,
+                 cooling_schedule="exp", cooling_schedule_kwargs=None,
+                 **kwargs):
+        """
+        :param sigma: the standard deviation of the normal distribution of
+            perturbations applied as mutations
+        :param member_size: the number of parameters for each member
+        :param member_draw_bounds: the low/high boundaries for the initial
+            draw of parameters for a member. e.g. (-1.0, 1.0)
+        :param cooling_schedule: a function or string. If string, the class
+            currently supports:
+                "exp" : "initial_temperature", "cooling_factor"
+
+        :param cooling_schedule_kwargs: default(None), dictionary of key word
+            arguments for the schedule.
+        :param kwargs: See BasicGA parameters
+        """
+        super().__init__(sigma, member_size, member_draw_bounds, **kwargs)
+        self.assign_cooling_schedule(cooling_schedule, cooling_schedule_kwargs)
+
+    def _exponential_cooling_schedule(self, time_step, initial_temperature=1.0,
+                                      cooling_factor=1.0):
+        """
+        Exponential decay cooling schedule
+        :param time_step: current time-step
+        :param initial_temperature: initial temperature (defaults 1.0)
+        :param cooling_factor: A value between [0,1] (defaults 1.0)
+        :return: New temperature
+        """
+
+        if (cooling_factor < 0) or (cooling_factor > 1):
+            raise AssertionError("Invalid input: Cooling factor must be"
+                                 " between 0 and 1.")
+        if initial_temperature < 0:
+            raise AssertionError("Invalid input: Initial temperature must be"
+                                 " greater > 0")
+
+        return initial_temperature * (cooling_factor ** time_step)
+
+    def assign_cooling_schedule(self, cooling_schedule,
+                                cooling_schedule_kwargs=None):
+        """
+        Assigns a cooling schedule to the evolutionary algorithm
+        :param cooling_schedule: "string" or function. Supports: "exp".
+        :param cooling_schedule_kwargs: key word arguments for cooling schedule
+        :return: None
+        """
+
+        if cooling_schedule_kwargs is None:
+            self._cooling_schedule_kwargs = {}
+
+        if cooling_schedule == "exp":
+            self.schedule_type = "exp"
+            self._cooling_schedule = partial(self._exponential_cooling_schedule,
+                                             **self._cooling_schedule_kwargs)
+        else:
+            self.schedule_type = "external"
+            self._cooling_schedule = partial(cooling_schedule,
+                                             **self._cooling_schedule_kwargs)
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_cooling_schedule_kwargs"] = self._cooling_schedule_kwargs
+        state["schedule_type"] = self.schedule_type
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+
+        if self.schedule_type == "exp":
+            self.assign_cooling_schedule("exp", self._cooling_schedule_kwargs)
+        else:
+            print("Warning: External cooling schedule defined, needs to be"
+                  " set before running evolution.")
+
+
 class RandNumTableGA(BaseGA):
     """
     A basic GA that uses a cached random number table. This speeds up
@@ -516,21 +751,104 @@ class RandNumTableGA(BaseGA):
 
     The table is a numpy array of normally distributed values: N(0,1).
     """
-    def __init__(self, sigma, member_size, member_draw_bounds,
-                 rand_num_table_size, max_table_step, max_param_step, **kwargs):
+    def __init__(self, sigma, member_size, **kwargs):
         """
         :param sigma: the standard deviation of mutation perturbations
         :param member_size: number of parameters per member
         :param member_draw_bounds: low/high of initial draw for member
         :param rand_num_table_size: the number of elements in the random table
         :param max_table_step: the maximum random stride for table slices
+        :param max_param_step: the maximum step size for parameter slices
         :param kwargs: parameters from BasicGA
+
+        Parameter slices are always the same size as the size of the member, but
+        by slicing it randomly you mitigate correlations in table slices by
+        shifting which parameters those mutations are applied too, allowing the
+        use of a smaller random table.
         """
         super().__init__(**kwargs)
-
+        self._sigma = sigma
+        self._member_size = member_size
         self._rand_num_table_size = kwargs.get("rand_num_table_size", 20000000)
         self._rand_num_table = self._global_rng.randn(self._rand_num_table_size)
         self._max_table_step = kwargs.get("max_table_step", 5)
+        self._max_param_step = kwargs.get("max_param_step", 1)
+        self._rand_num_table *= self._sigma
+
+    def _draw_random_parameter_slices(self, rng):
+        """
+        Chooses a constrained slice subset of the parameters (start, stop, step)
+        to give roughly num_mutations perturbations (less if overlap if
+        step is too large)
+        """
+
+        return random_slices(rng, self._member_size, self._member_size,
+                             self._max_param_step)
+
+    def _draw_random_table_slices(self, rng):
+        """
+        Chooses a constrained slice subset of the RN table (start, stop, step)
+        to give roughly num_mutations random numbers (less if overlap if
+        step is too large)
+        """
+
+        return random_slices(rng, self._rand_num_table_size,
+                             self._member_size, self._max_table_step)
+
+    def member_generator(self, rng):
+        """
+        Uses perturbation table to build initial members. This results in a
+        somewhat different distribution of initial parameters as the BasicGA's
+        draw.
+
+        Draws from the scaled perturbation distribution. If the member hasn't
+        been created yet it creates an empty one. This ensures allocation only
+        occurs during initialization and not during the run.
+
+        :return 1d numpy float32 array that represents member
+        """
+
+        if not hasattr(self, '_member'):
+            self._member = np.zeros(self._member_size, dtype=np.float32)
+
+        param_slices = self._draw_random_parameter_slices(rng)
+        table_slices = self._draw_random_table_slices(rng)
+        param_slices, table_slices = match_slices(param_slices, table_slices)
+        multi_slice_assign(self._member, self._rand_num_table, param_slices,
+                           table_slices)
+
+        return self._member
+
+    def mutator(self, member, rng):
+        """
+        Can be used with BasicGAs
+
+        :param member: a member to mutate
+        :param rng: a numpy randomState
+        :return: reference to member that is changed in-place
+        """
+
+        param_slices = self._draw_random_parameter_slices(rng)
+        table_slices = self._draw_random_table_slices(rng)
+        param_slices, table_slices = match_slices(param_slices, table_slices)
+        multi_slice_add(member, self._rand_num_table, param_slices, table_slices)
+
+        return member
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_sigma"] = self._sigma
+        state["_member_size"] = self._member_size
+        state["_rand_num_table_size"] = self._rand_num_table_size
+        state["_max_table_step"] = self._max_table_step
+        state["_max_param_step"] = self._max_param_step
+
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self._rand_num_table = self._global_rng.randn(self._rand_num_table_size)
+        self._rand_num_table *= self._sigma
 
 
 class BoundedRandNumTableGA(RandNumTableGA):
