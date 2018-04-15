@@ -451,6 +451,10 @@ class SusGA(ABC, BaseGA):
         self._ranks = range(self._size)
         self._cost_rank_sum = self._size * (self._size + 1) / 2
         self._number_to_select = self._size - self._num_elite
+        self._selection_probabilities = [self.linearly_scaled_member_rank(i)
+                                         for i in self._ranks]
+        self._num_expected_copies = [probability * self._number_to_select
+                                     for probability in self._selection_probabilities]
 
     def linearly_scaled_member_rank(self, cost_index):
         """
@@ -460,49 +464,30 @@ class SusGA(ABC, BaseGA):
         """
         return (self._size - cost_index) / self._cost_rank_sum
 
-    def sus(self, rng, sorted_ranks, selection_probabilities):
-        """
-        Implements SUS. Enforces elitism.
-        :param rng: a random number generator from which to determine the
-            selected individuals
-        :param sorted_ranks: a np.array of ranks that match the selection
-            probabilities. These should be sorted from least->greatest cost.
-        :param selection_probabilities: a list of selection probabilities for
-            each rank
-        :return: a list of selected members to replace the population
-        """
-
-        selected = list(sorted_ranks[:self._num_elite])
-        num_expected_copies = [probability * self._number_to_select
-                               for probability in selection_probabilities]
-        rv = rng.rand()
-        count = 0
-        for i in range(self._number_to_select):
-            count += num_expected_copies[i]
-            while rv < count:
-                rv += 1
-                selected.append(sorted_ranks[i])
-
-        return selected
-
-    def _member_selection(self, l2g_ranks):
+    def sus(self, rng, sorted_ranks):
         """
         Implements stochastic universal sampling and returns a list of
         selected ranks and is the same size as the population. There can be
         duplicate ranks which get selected more than once.
 
-        Elitism is enforced, as only N-num_elites are actually selected via SUS.
-
-        :param l2g_ranks: a numpy array from argsort which returns the indexes
-            of all_costs that would sort the array. This means the first value
-            is the highest performing rank while the last value is the lowest
-            performing rank.
-        :return: a list of selected ranks
+        Implements SUS. Enforces elitism.
+        :param rng: a random number generator from which to determine the
+            selected individuals
+        :param sorted_ranks: a np.array of ranks that match the selection
+            probabilities. These should be sorted from least->greatest cost.
+        :return: a list of selected members to replace the population
         """
-        selection_probabilities = [self.linearly_scaled_member_rank(cost_index)
-                                   for cost_index in l2g_ranks]
 
-        return self.sus(self._global_rng, l2g_ranks, selection_probabilities)
+        selected = list(sorted_ranks[:self._num_elite])
+        rv = rng.rand()
+        count = 0
+        for i in range(self._size):
+            count += self._num_expected_copies[i]
+            while rv < count:
+                rv += 1
+                selected.append(sorted_ranks[i])
+
+        return selected
 
     def match_remainder(self, selected_rank_list):
         """
@@ -521,14 +506,13 @@ class SusGA(ABC, BaseGA):
         # Remove matched ranks where no move is required
         selected_rank_count = Counter(selected_rank_list)
         selected_rank_count.subtract(self._ranks)
-        remaining_selected_ranks = [key for key in selected_rank_count.keys()
-                                    if selected_rank_count[key] > 0]
+        remaining_selected_ranks = list(selected_rank_count.elements())
         remaining_available_ranks = [key for key in selected_rank_count.keys()
                                      if selected_rank_count[key] < 0]
 
         # Create messages for remaining ranks
-        return [ (remaining_selected_ranks[i], remaining_available_ranks[i])
-                 for i in range(len(remaining_available_ranks))]
+        return [(remaining_selected_ranks[i], remaining_available_ranks[i])
+                for i in range(len(remaining_available_ranks))]
 
     def _construct_message_list(self, l2g_ranks):
         """
@@ -541,7 +525,7 @@ class SusGA(ABC, BaseGA):
         """
 
         # Implement selection process
-        selected_rank_list = self._member_selection(l2g_ranks)
+        selected_rank_list = self.sus(self._global_rng, l2g_ranks)
 
         # Create messages from selected
         return self.match_remainder(selected_rank_list)
@@ -551,6 +535,8 @@ class SusGA(ABC, BaseGA):
         state["_ranks"] = self._ranks
         state["_cost_rank_sum"] = self._cost_rank_sum
         state["_number_to_select"] = self._number_to_select
+        state["_selection_probabilities"] = self._selection_probabilities
+        state["_num_expected_copies"] = self._num_expected_copies
 
         return state
 
