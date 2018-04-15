@@ -369,7 +369,7 @@ class BaseGA(ABC):
         self.obj_args = None
 
 
-class TruncatedGA(ABC, BaseGA):
+class TruncatedGA(BaseGA):
     """
     Truncated selection works be selection the top # parents members and then
     replacing all other members with a uniform random draw from those top
@@ -438,7 +438,7 @@ class TruncatedGA(ABC, BaseGA):
         return state
 
 
-class SusGA(ABC, BaseGA):
+class SusGA(BaseGA):
     """
     Implements stochastic universal sampling with linear rank-based selection.
     """
@@ -541,7 +541,7 @@ class SusGA(ABC, BaseGA):
         return state
 
 
-class BasicGA(TruncatedGA):
+class RealStaticGA(BaseGA):
     """
     A modular GA that requires a mutation size (sigma), member size, and
     bounds for member initialization.
@@ -574,7 +574,7 @@ class BasicGA(TruncatedGA):
     pickled) before best and population can be accessed.
     """
 
-    def __init__(self, sigma, member_size, member_draw_bounds, **kwargs):
+    def __init__(self, **kwargs):
         """
         :param sigma: the standard deviation of the normal distribution of
             perturbations applied as mutations
@@ -588,9 +588,9 @@ class BasicGA(TruncatedGA):
         """
 
         super().__init__(**kwargs)
-        self._sigma = sigma
-        self._member_size = member_size
-        self._member_draw_bounds = member_draw_bounds
+        self._sigma = kwargs.get('sigma', 1.0)
+        self._member_size = kwargs['member_size']
+        self._member_draw_bounds = kwargs['member_draw_bounds']
 
     def member_generator(self, rng):
         """
@@ -632,7 +632,7 @@ class BasicGA(TruncatedGA):
         return state
 
 
-class BoundedBasicGA(BasicGA):
+class BoundedBasicGA(RealStaticGA):
     """
     A BasicGA with bounds.
     """
@@ -648,14 +648,12 @@ class BoundedBasicGA(BasicGA):
         pass
 
 
-class AnnealedBasicGA(BasicGA):
+class AnnealedGA(BaseGA):
     """
-    A version of the BasicGA that uses simulated annealing.
+    A version of the BaeGA that uses simulated annealing.
     """
 
-    def __init__(self, sigma, member_size, member_draw_bounds,
-                 cooling_schedule="exp", cooling_schedule_kwargs=None,
-                 **kwargs):
+    def __init__(self, **kwargs):
         """
         :param sigma: the standard deviation of the normal distribution of
             perturbations applied as mutations
@@ -670,8 +668,11 @@ class AnnealedBasicGA(BasicGA):
             arguments for the schedule.
         :param kwargs: See BasicGA parameters
         """
-        super().__init__(sigma, member_size, member_draw_bounds, **kwargs)
-        self.assign_cooling_schedule(cooling_schedule, cooling_schedule_kwargs)
+        super().__init__(**kwargs)
+        self._cooling_schedule = kwargs.get('cooling_schedule', "exp")
+        self._cooling_schedule_kwargs = kwargs.get('cooling_schedule_kwargs', None)
+        self.assign_cooling_schedule(self._cooling_schedule,
+                                     self._cooling_schedule_kwargs)
 
     def _exponential_cooling_schedule(self, time_step, initial_temperature=1.0,
                                       cooling_factor=1.0):
@@ -728,7 +729,7 @@ class AnnealedBasicGA(BasicGA):
                   " set before running evolution.")
 
 
-class RandNumTableGA(BaseGA):
+class RandNumTableGA(RealStaticGA):
     """
     A basic GA that uses a cached random number table. This speeds up
     the mutation process considerably at the cost of memory. By using a table
