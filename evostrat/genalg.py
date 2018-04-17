@@ -859,12 +859,77 @@ class RandNumTableModule(BaseGA):
 
 
 class TruncatedRandNumTableGA(RandNumTableModule, TruncatedSelection):
+    """
+    Implements truncated random selection and a real valued random number table
+    GA.
+
+    :param objective: the object function, returns a cost scalar
+    :param obj_kwargs: key word arguments of the objective function (default {})
+    :param verbose: True/False whether to print output (default False)
+    :param elite_fraction: fraction of best performing that go unmutated to
+        next generation (default 0.1)
+    :param num_elite: same as above, can set one or the other
+    :param seed: used to generate all seeds and random values (default: 1)
+    :param parent_fraction: fraction of number of members that will be
+        parents for the truncated selection
+    :param num_parents: see above (can be set instead of parent_fraction,
+        only set one or the other)
+    :param sigma: the standard deviation of mutation perturbations
+    :param member_size: number of parameters per member
+    :param member_draw_bounds: low/high of initial draw for member
+    :param rand_num_table_size: the number of elements in the random table
+    :param max_table_step: the maximum random stride for table slices
+    :param max_param_step: the maximum step size for parameter slices
+    """
     pass
 
 
 class SusRandNumTableGA(RandNumTableModule, SusSelection):
+    """
+    Implements stochastic universal sampling and a real valued random number
+    table GA.
+
+    :param objective: the object function, returns a cost scalar
+    :param obj_kwargs: key word arguments of the objective function (default {})
+    :param verbose: True/False whether to print output (default False)
+    :param elite_fraction: fraction of best performing that go unmutated to
+        next generation (default 0.1)
+    :param num_elite: same as above, can set one or the other
+    :param seed: used to generate all seeds and random values (default: 1)
+    :param sigma: the standard deviation of mutation perturbations
+    :param member_size: number of parameters per member
+    :param member_draw_bounds: low/high of initial draw for member
+    :param rand_num_table_size: the number of elements in the random table
+    :param max_table_step: the maximum random stride for table slices
+    :param max_param_step: the maximum step size for parameter slices
+    """
     pass
 
 
 class TruncatedRealMutatorGA(RealMutator, TruncatedSelection):
+    """
+    Implements truncated random selection and uses real valued perturbations
+    drawn during optimization.
+
+    :param objective: the object function, returns a cost scalar
+    :param obj_kwargs: key word arguments of the objective function (default {})
+    :param verbose: True/False whether to print output (default False)
+    :param elite_fraction: fraction of best performing that go unmutated to
+        next generation (default 0.1)
+    :param num_elite: same as above, can set one or the other
+    :param seed: used to generate all seeds and random values (default: 1)
+    :param parent_fraction: fraction of number of members that will be
+        parents for the truncated selection
+    :param num_parents: see above (can be set instead of parent_fraction,
+        only set one or the other)
+    :param sigma: the standard deviation of the normal distribution of
+        perturbations applied as mutations
+    :param member_size: the number of parameters for each member
+    :param member_draw_bounds: the low/high boundaries for the initial
+        draw of parameters for a member. e.g. (-1.0, 1.0)
+    :param elite_fraction: the fraction of members to withhold from mutation
+    :param parent_fraction: the fraction of the population to maintain. remaining
+        members are culled and replaced with more successful parents.
+        This is the truncation selection process.
+    """
     pass
