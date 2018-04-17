@@ -859,9 +859,6 @@ class RandNumTableModule(BaseGA):
 
 
 class TruncatedRandNumTableGA(RandNumTableModule, TruncatedSelection):
-    # def __init__(self, **kwargs):
-    #     RandNumTableModule.__init__(self, **kwargs)
-    #     TruncatedSelection.__init__(self, **kwargs)
     pass
 
 
