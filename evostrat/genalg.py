@@ -55,8 +55,6 @@ class BaseGA(ABC):
         self._mutation_rng = np.random.RandomState(self._initial_seed_list[self._rank])
         self._seed_rng = np.random.RandomState(self._seed_seed_list[self._rank])
         self._member_genealogy = [self._initial_seed_list[self._rank]]
-        self._member = self._make_member(self._mutation_rng,
-                                         self._member_genealogy)
         self._population_genealogy = [[] for i in range(self._size)]
 
     def __call__(self, num_iterations, objective=None, kwargs=None):
@@ -132,12 +130,10 @@ class BaseGA(ABC):
         try:
             return self._make_member(self._mutation_rng,
                                      self._population_genealogy[
-                                         np.argsort(self._cost_history[-1])[0]])
+                                        np.argsort(self._cost_history[-1])[0]])
         except IndexError:
             raise IndexError("No score or population genealogy from which"
                              "to generate best. Run optimization first.")
-        except TypeError:
-            raise TypeError("Need to set mutation and member generating functions")
 
     @property
     def population(self):
@@ -273,7 +269,7 @@ class BaseGA(ABC):
             if cost_index >= self._num_elite:
                 if rank == self._rank:
                     # draw mutation seed
-                    seed = self._mutation_rng.randint(0, self._max_seed)
+                    seed = self._seed_rng.randint(0, self._max_seed)
                     self._member_genealogy.append(seed)
 
                     # apply mutation
@@ -349,13 +345,15 @@ class BaseGA(ABC):
                  "_generation_number": self._generation_number,
                  "_cost_history": self._cost_history,
                  "_member_genealogy": self._member_genealogy,
-                 "_member": self._member,
                  "_population_genealogy": self._population_genealogy}
 
         return state
 
     def __setstate__(self, state):
-
+        """
+        Member genealogy must be reset to the corresponding rank, since
+        only rank0 is saved.
+        """
         for key in state:
             setattr(self, key, state[key])
 
@@ -368,8 +366,14 @@ class BaseGA(ABC):
         self.objective = None
         self.obj_args = None
 
+        # Reassign member genealogies and make seed rng recent
+        self._seed_rng = np.random.RandomState(self._seed_seed_list[self._rank])
+        for i in range(self._generation_number):
+            self._seed_rng.randint(0, self._max_seed)
+        self._member_genealogy = self._population_genealogy[self._rank][:]
 
-class TruncatedGA(BaseGA):
+
+class TruncatedSelection(BaseGA):
     """
     Truncated selection works be selection the top # parents members and then
     replacing all other members with a uniform random draw from those top
@@ -396,7 +400,7 @@ class TruncatedGA(BaseGA):
             self._num_parents = kwargs.get('num_parents', int(self._size / 2))
             self._parent_fraction = self._num_parents / self._size
 
-        if self._num_elite < self._num_parents:
+        if self._num_elite > self._num_parents:
             raise AssertionError("Number of elite has to be less than the"
                                  " number of parents")
 
@@ -438,7 +442,7 @@ class TruncatedGA(BaseGA):
         return state
 
 
-class SusGA(BaseGA):
+class SusSelection(BaseGA):
     """
     Implements stochastic universal sampling with linear rank-based selection.
     """
@@ -541,7 +545,7 @@ class SusGA(BaseGA):
         return state
 
 
-class RealStaticGA(BaseGA):
+class RealMutator(BaseGA):
     """
     A modular GA that requires a mutation size (sigma), member size, and
     bounds for member initialization.
@@ -591,6 +595,8 @@ class RealStaticGA(BaseGA):
         self._sigma = kwargs.get('sigma', 1.0)
         self._member_size = kwargs['member_size']
         self._member_draw_bounds = kwargs['member_draw_bounds']
+        self._member = self._make_member(self._mutation_rng,
+                                         self._member_genealogy)
 
     def member_generator(self, rng):
         """
@@ -628,38 +634,34 @@ class RealStaticGA(BaseGA):
         state["_sigma"] = self._sigma
         state["_member_size"] = self._member_size
         state["_member_draw_bounds"] = self._member_draw_bounds
+        state["_member"] = self._member
 
         return state
 
+    def __setstate__(self, state):
+        """
+        The members need to be generated from the member's genealogy,
+        as only the rank=0 member is actually saved.
+        The member genealogy is set to the proper rank by the baseGA
+        """
+        super().__setstate__(state)
+        self._member = self._make_member(self._mutation_rng,
+                                         self._member_genealogy)
 
-class BoundedBasicGA(RealStaticGA):
+
+class AnnealingModule(BaseGA):
     """
-    A BasicGA with bounds.
+    A version of the BaseGA that uses simulated annealing.
+    Can be inherited to give access to cooling schedules.
+
+    The mutator should be defined so that
+    TODO: Genealogy doesn't track step-size changes, need find way to do that
+    self._generation_number is fed to the schedule to output a scaling factor
+    for the mutation rate or step size (usually sigma).
     """
+
     def __init__(self, **kwargs):
         """
-        member_generating_function: a function that takes a numpy RNG and table
-            as an argument and will return a np.float32 array that can be passed
-            to the fitness function.
-        mutation_function: a function that takes a numpy RNG and table as an
-            argument and will return a np.float32 array that can be added to a
-            member to produce a mutation.
-        """
-        pass
-
-
-class AnnealedGA(BaseGA):
-    """
-    A version of the BaeGA that uses simulated annealing.
-    """
-
-    def __init__(self, **kwargs):
-        """
-        :param sigma: the standard deviation of the normal distribution of
-            perturbations applied as mutations
-        :param member_size: the number of parameters for each member
-        :param member_draw_bounds: the low/high boundaries for the initial
-            draw of parameters for a member. e.g. (-1.0, 1.0)
         :param cooling_schedule: a function or string. If string, the class
             currently supports:
                 "exp" : "initial_temperature", "cooling_factor"
@@ -702,8 +704,11 @@ class AnnealedGA(BaseGA):
         :return: None
         """
 
-        if cooling_schedule_kwargs is None:
+        if (cooling_schedule_kwargs is None) and \
+                (self._cooling_schedule_kwargs is None):
             self._cooling_schedule_kwargs = {}
+        elif cooling_schedule_kwargs is not None:
+            self._cooling_schedule_kwargs = cooling_schedule_kwargs
 
         if cooling_schedule == "exp":
             self.schedule_type = "exp"
@@ -729,7 +734,7 @@ class AnnealedGA(BaseGA):
                   " set before running evolution.")
 
 
-class RandNumTableGA(RealStaticGA):
+class RandNumTableModule(BaseGA):
     """
     A basic GA that uses a cached random number table. This speeds up
     the mutation process considerably at the cost of memory. By using a table
@@ -738,7 +743,7 @@ class RandNumTableGA(RealStaticGA):
 
     The table is a numpy array of normally distributed values: N(0,1).
     """
-    def __init__(self, sigma, member_size, **kwargs):
+    def __init__(self, **kwargs):
         """
         :param sigma: the standard deviation of mutation perturbations
         :param member_size: number of parameters per member
@@ -754,13 +759,19 @@ class RandNumTableGA(RealStaticGA):
         use of a smaller random table.
         """
         super().__init__(**kwargs)
-        self._sigma = sigma
-        self._member_size = member_size
+        self._rand_num_table_seed = kwargs.get('rand_num_table_seed',
+                                               self._py_rng.sample(
+                                                    range(self._max_seed), 1)[0])
+        self._table_rng = np.random.RandomState(self._rand_num_table_seed)
         self._rand_num_table_size = kwargs.get("rand_num_table_size", 20000000)
-        self._rand_num_table = self._global_rng.randn(self._rand_num_table_size)
+        self._rand_num_table = self._table_rng.randn(self._rand_num_table_size)
+        self._sigma = kwargs['sigma']
+        self._member_size = kwargs['member_size']
         self._max_table_step = kwargs.get("max_table_step", 5)
         self._max_param_step = kwargs.get("max_param_step", 1)
         self._rand_num_table *= self._sigma
+        self._member = self._make_member(self._mutation_rng,
+                                         self._member_genealogy)
 
     def _draw_random_parameter_slices(self, rng):
         """
@@ -829,28 +840,34 @@ class RandNumTableGA(RealStaticGA):
         state["_rand_num_table_size"] = self._rand_num_table_size
         state["_max_table_step"] = self._max_table_step
         state["_max_param_step"] = self._max_param_step
+        state["_rand_num_table_seed"] = self._rand_num_table_seed
 
         return state
 
     def __setstate__(self, state):
+        """
+        The RN table has to be re-created and the members for each rank need
+        to be generated from the member's genealogy.
+        The member genealogy is set to the proper rank by the baseGA
+        """
         super().__setstate__(state)
-        self._rand_num_table = self._global_rng.randn(self._rand_num_table_size)
+        self._table_rng = np.random.RandomState(self._rand_num_table_seed)
+        self._rand_num_table = self._table_rng.randn(self._rand_num_table_size)
         self._rand_num_table *= self._sigma
+        self._member = self._make_member(self._mutation_rng,
+                                         self._member_genealogy)
 
 
-class BoundedRandNumTableGA(RandNumTableGA):
-    """
-    A RandNumTable with bounds.
-    """
+class TruncatedRandNumTableGA(RandNumTableModule, TruncatedSelection):
+    # def __init__(self, **kwargs):
+    #     RandNumTableModule.__init__(self, **kwargs)
+    #     TruncatedSelection.__init__(self, **kwargs)
+    pass
 
-    def __init__(self):
-        """
-        member_generating_function: a function that takes a numpy RNG and table
-            as an argument and will return a np.float32 array that can be passed
-            to the fitness function.
-        mutation_function: a function that takes a numpy RNG and table as an
-            argument and will return a np.float32 array that can be added to a
-            member to produce a mutation.
-        """
 
-        pass
+class SusRandNumTableGA(RandNumTableModule, SusSelection):
+    pass
+
+
+class TruncatedRealMutatorGA(RealMutator, TruncatedSelection):
+    pass

@@ -63,7 +63,6 @@ from .evostrat import BasicES
 from .evostrat import BoundedBasicES
 from .evostrat import RandNumTableES
 from .evostrat import BoundedRandNumTableES
-from .genalg import BasicGA
-from .genalg import BoundedBasicGA
-from .genalg import RandNumTableGA
-from .genalg import BoundedRandNumTableGA
+from .genalg import TruncatedRandNumTableGA
+from .genalg import SusRandNumTableGA
+from .genalg import TruncatedRealMutatorGA

@@ -15,5 +15,8 @@
 .cproject
 /.idea/
 
+# temporarily remove tests until its complete
+tests/
+
 # remove cache files
 /*__pycache__

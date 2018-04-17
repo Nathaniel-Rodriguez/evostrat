@@ -518,6 +518,7 @@ class RandNumTableES(BasicES):
         """
         *Adds an additional multiply operation to avoid creating a new
         set of arrays for the slices. Not sure which would be faster
+        *This is not applied to the running best, because it is not a weighted sum
         """
         for parent_num, rank in enumerate(np.argsort(all_costs)):
             if parent_num < self._num_parents:
@@ -570,7 +571,7 @@ class BoundedRandNumTableES(RandNumTableES):
     windows at each iteration and the need to rescale the entire array
     rather than a subset. This is because the search needs to happen in the 
     folded real space (which gets folded onto (0,1)), but the objective needs 
-    the rescaled space. I think I left it out for now, may add in the future
+    the rescaled space. I left it out for now, may add in the future
     """
 
     def __init__(self, xo, step_size, bounds, **kwargs):
