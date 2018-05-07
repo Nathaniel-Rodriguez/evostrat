@@ -747,7 +747,6 @@ class RandNumTableModule(BaseGA):
         """
         :param sigma: the standard deviation of mutation perturbations
         :param member_size: number of parameters per member
-        :param member_draw_bounds: low/high of initial draw for member
         :param rand_num_table_size: the number of elements in the random table
         :param max_table_step: the maximum random stride for table slices
         :param max_param_step: the maximum step size for parameter slices
@@ -876,7 +875,6 @@ class TruncatedRandNumTableGA(RandNumTableModule, TruncatedSelection):
         only set one or the other)
     :param sigma: the standard deviation of mutation perturbations
     :param member_size: number of parameters per member
-    :param member_draw_bounds: low/high of initial draw for member
     :param rand_num_table_size: the number of elements in the random table
     :param max_table_step: the maximum random stride for table slices
     :param max_param_step: the maximum step size for parameter slices
