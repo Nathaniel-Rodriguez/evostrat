@@ -48,7 +48,7 @@ class BaseGA(ABC):
             self._num_elite = kwargs.get('num_elite', 1)
             self._elite_fraction = self._num_elite / self._size
 
-        self._initial_guess = kwargs['initial_guess']
+        self._initial_guess = kwargs['initial_guess'].astype(dtype=np.float32)
         self._generation_number = 0
         self._cost_history = []
 
