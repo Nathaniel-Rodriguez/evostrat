@@ -10,10 +10,16 @@ from collections import Counter
 class BaseGA(ABC):
     """
     Contains basic members and functions common to derived GA classes
+
+    :note: self._member is not initialized in BaseGA, as mutator classes may
+    need to initialize their state before mutations can be drawn to create
+    the first member
     """
 
     def __init__(self, **kwargs):
         """
+        :param initial_guess: a numpy array from which to generate perturbations from
+            should be 1d numpy float32
         :param objective: the object function, returns a cost scalar
         :param obj_kwargs: key word arguments of the objective function (default {})
         :param verbose: True/False whether to print output (default False)
@@ -42,6 +48,7 @@ class BaseGA(ABC):
             self._num_elite = kwargs.get('num_elite', 1)
             self._elite_fraction = self._num_elite / self._size
 
+        self._initial_guess = kwargs['initial_guess']
         self._generation_number = 0
         self._cost_history = []
 
@@ -82,14 +89,29 @@ class BaseGA(ABC):
 
         self._share_genealogy()
 
-    @abstractmethod
     def member_generator(self, rng):
         """
-        Creates a new member and returns it.
-        :param rng: a numpy random number generator
-        :return: a new member
+        Uses initial guess to build initial members. This results in a
+        somewhat different distribution of initial parameters as the BasicGA's
+        draw.
+
+        Draws from the perturbation distribution. If the member hasn't
+        been created yet it creates a new one from initial guess, else it
+        uses assignment to copy. This ensures allocation only occurs during
+        initialization and not during the run.
+
+        :return 1d numpy float32 array that represents member
         """
-        pass
+
+        if not hasattr(self, '_member'):
+            self._member = self._initial_guess.copy()
+        else:
+            self._member[:] = self._initial_guess[:]
+
+        # Mutation is applied here, as fitness is calculated first and mutation last
+        self.mutator(self._member, rng)
+
+        return self._member
 
     @abstractmethod
     def mutator(self, member, rng):
@@ -162,7 +184,7 @@ class BaseGA(ABC):
 
     def _make_member(self, rng, seed_list):
         """
-        Creates a member of the population for this rank
+        Creates a member of the population given a see list
         """
 
         rng.seed(seed_list[0])
@@ -345,7 +367,8 @@ class BaseGA(ABC):
                  "_generation_number": self._generation_number,
                  "_cost_history": self._cost_history,
                  "_member_genealogy": self._member_genealogy,
-                 "_population_genealogy": self._population_genealogy}
+                 "_population_genealogy": self._population_genealogy,
+                 "_initial_guess": self._initial_guess}
 
         return state
 
@@ -582,9 +605,6 @@ class RealMutator(BaseGA):
         """
         :param sigma: the standard deviation of the normal distribution of
             perturbations applied as mutations
-        :param member_size: the number of parameters for each member
-        :param member_draw_bounds: the low/high boundaries for the initial
-            draw of parameters for a member. e.g. (-1.0, 1.0)
         :param elite_fraction: the fraction of members to withhold from mutation
         :param parent_fraction: the fraction of the population to maintain. remaining
             members are culled and replaced with more successful parents.
@@ -592,27 +612,11 @@ class RealMutator(BaseGA):
         """
 
         super().__init__(**kwargs)
+
         self._sigma = kwargs.get('sigma', 1.0)
-        self._member_size = kwargs['member_size']
-        self._member_draw_bounds = kwargs['member_draw_bounds']
+        self._member_size = len(self._member)
         self._member = self._make_member(self._mutation_rng,
                                          self._member_genealogy)
-
-    def member_generator(self, rng):
-        """
-        Can be used with BasicGAs
-
-        Function that takes a numpy rng to generate a new member.
-        :param rng: a numpy random number generator
-
-        Draws from a uniform distribution between low and high.
-
-        :return 1d numpy float32 array that represents member
-        """
-
-        return rng.uniform(self._member_draw_bounds[0],
-                           self._member_draw_bounds[1],
-                           self._member_size).astype(np.float32)
 
     def mutator(self, member, rng):
         """
@@ -633,7 +637,6 @@ class RealMutator(BaseGA):
         state = super().__getstate__()
         state["_sigma"] = self._sigma
         state["_member_size"] = self._member_size
-        state["_member_draw_bounds"] = self._member_draw_bounds
         state["_member"] = self._member
 
         return state
@@ -746,7 +749,6 @@ class RandNumTableModule(BaseGA):
     def __init__(self, **kwargs):
         """
         :param sigma: the standard deviation of mutation perturbations
-        :param member_size: number of parameters per member
         :param rand_num_table_size: the number of elements in the random table
         :param max_table_step: the maximum random stride for table slices
         :param max_param_step: the maximum step size for parameter slices
@@ -765,7 +767,7 @@ class RandNumTableModule(BaseGA):
         self._rand_num_table_size = kwargs.get("rand_num_table_size", 20000000)
         self._rand_num_table = self._table_rng.randn(self._rand_num_table_size)
         self._sigma = kwargs['sigma']
-        self._member_size = kwargs['member_size']
+        self._member_size = len(self._initial_guess)
         self._max_table_step = kwargs.get("max_table_step", 5)
         self._max_param_step = kwargs.get("max_param_step", 1)
         self._rand_num_table *= self._sigma
@@ -792,30 +794,6 @@ class RandNumTableModule(BaseGA):
         return random_slices(rng, self._rand_num_table_size,
                              self._member_size, self._max_table_step)
 
-    def member_generator(self, rng):
-        """
-        Uses perturbation table to build initial members. This results in a
-        somewhat different distribution of initial parameters as the BasicGA's
-        draw.
-
-        Draws from the scaled perturbation distribution. If the member hasn't
-        been created yet it creates an empty one. This ensures allocation only
-        occurs during initialization and not during the run.
-
-        :return 1d numpy float32 array that represents member
-        """
-
-        if not hasattr(self, '_member'):
-            self._member = np.zeros(self._member_size, dtype=np.float32)
-
-        param_slices = self._draw_random_parameter_slices(rng)
-        table_slices = self._draw_random_table_slices(rng)
-        param_slices, table_slices = match_slices(param_slices, table_slices)
-        multi_slice_assign(self._member, self._rand_num_table, param_slices,
-                           table_slices)
-
-        return self._member
-
     def mutator(self, member, rng):
         """
         Can be used with BasicGAs
@@ -834,12 +812,14 @@ class RandNumTableModule(BaseGA):
 
     def __getstate__(self):
         state = super().__getstate__()
+
         state["_sigma"] = self._sigma
         state["_member_size"] = self._member_size
         state["_rand_num_table_size"] = self._rand_num_table_size
         state["_max_table_step"] = self._max_table_step
         state["_max_param_step"] = self._max_param_step
         state["_rand_num_table_seed"] = self._rand_num_table_seed
+        state["_member"] = self._member
 
         return state
 
@@ -873,8 +853,8 @@ class TruncatedRandNumTableGA(RandNumTableModule, TruncatedSelection):
         parents for the truncated selection
     :param num_parents: see above (can be set instead of parent_fraction,
         only set one or the other)
+    :param initial_guess: numpy array from which to draw perturbations around
     :param sigma: the standard deviation of mutation perturbations
-    :param member_size: number of parameters per member
     :param rand_num_table_size: the number of elements in the random table
     :param max_table_step: the maximum random stride for table slices
     :param max_param_step: the maximum step size for parameter slices
@@ -895,7 +875,7 @@ class SusRandNumTableGA(RandNumTableModule, SusSelection):
     :param num_elite: same as above, can set one or the other
     :param seed: used to generate all seeds and random values (default: 1)
     :param sigma: the standard deviation of mutation perturbations
-    :param member_size: number of parameters per member
+    :param initial_guess: numpy array from which to draw perturbations around
     :param member_draw_bounds: low/high of initial draw for member
     :param rand_num_table_size: the number of elements in the random table
     :param max_table_step: the maximum random stride for table slices
