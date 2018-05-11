@@ -842,6 +842,7 @@ class TruncatedRandNumTableGA(RandNumTableModule, TruncatedSelection):
     Implements truncated random selection and a real valued random number table
     GA.
 
+    :param initial_guess: numpy float32 array from which to draw perturbations around
     :param objective: the object function, returns a cost scalar
     :param obj_kwargs: key word arguments of the objective function (default {})
     :param verbose: True/False whether to print output (default False)
@@ -867,6 +868,7 @@ class SusRandNumTableGA(RandNumTableModule, SusSelection):
     Implements stochastic universal sampling and a real valued random number
     table GA.
 
+    :param initial_guess: numpy float32 array from which to draw perturbations around
     :param objective: the object function, returns a cost scalar
     :param obj_kwargs: key word arguments of the objective function (default {})
     :param verbose: True/False whether to print output (default False)
@@ -875,7 +877,6 @@ class SusRandNumTableGA(RandNumTableModule, SusSelection):
     :param num_elite: same as above, can set one or the other
     :param seed: used to generate all seeds and random values (default: 1)
     :param sigma: the standard deviation of mutation perturbations
-    :param initial_guess: numpy array from which to draw perturbations around
     :param member_draw_bounds: low/high of initial draw for member
     :param rand_num_table_size: the number of elements in the random table
     :param max_table_step: the maximum random stride for table slices
@@ -889,6 +890,7 @@ class TruncatedRealMutatorGA(RealMutator, TruncatedSelection):
     Implements truncated random selection and uses real valued perturbations
     drawn during optimization.
 
+    :param initial_guess: numpy float32 array from which to draw perturbations around
     :param objective: the object function, returns a cost scalar
     :param obj_kwargs: key word arguments of the objective function (default {})
     :param verbose: True/False whether to print output (default False)
