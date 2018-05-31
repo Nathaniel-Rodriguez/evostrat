@@ -64,13 +64,25 @@ class BaseGA(ABC):
         self._member_genealogy = [self._initial_seed_list[self._rank]]
         self._population_genealogy = [[] for i in range(self._size)]
 
-    def __call__(self, num_iterations, objective=None, kwargs=None):
+    def __call__(self, num_iterations, objective=None, kwargs=None,
+                 save=True, save_every=None, save_filename="test.ga"):
         """
+        Runs the genetic algorithm. It first sets the objective (since objectives
+        are usually functions they aren't pickled with the GA, so have to be
+        set each time the GA is loaded). It then runs for the designated number
+        of iterations. At the end if shares the genealogy with the root node (
+        usually node 0).
+
         :param num_iterations: how many generations it will run for
         :param objective: a full or partial version of function
         :param kwargs: key word arguments for additional objective parameters
+        :param save: T/F, whether to save after the run is complete
+        :param save_every: None or integer, shares genealogy and saves every X
+            iterations.
+        :param save_filename: name of savefile, default: test.ga)
         :return: None
         """
+
         if objective is not None:
             if kwargs is None:
                 kwargs = {}
@@ -85,9 +97,19 @@ class BaseGA(ABC):
             if self._verbose and (self._rank == 0):
                 print("Generation:", self._generation_number)
             self._update(partial_objective)
+
+            # Shares genealogy and saves using root node.
+            if not (save_every is None):
+                if ((i % save_every) == 0) and (i != 0):
+                    self._share_genealogy()
+                    self.save(save_filename)
+
             self._generation_number += 1
 
         self._share_genealogy()
+
+        if save:
+            self.save(save_filename)
 
     def member_generator(self, rng):
         """
@@ -877,7 +899,6 @@ class SusRandNumTableGA(RandNumTableModule, SusSelection):
     :param num_elite: same as above, can set one or the other
     :param seed: used to generate all seeds and random values (default: 1)
     :param sigma: the standard deviation of mutation perturbations
-    :param member_draw_bounds: low/high of initial draw for member
     :param rand_num_table_size: the number of elements in the random table
     :param max_table_step: the maximum random stride for table slices
     :param max_param_step: the maximum step size for parameter slices
@@ -905,8 +926,6 @@ class TruncatedRealMutatorGA(RealMutator, TruncatedSelection):
     :param sigma: the standard deviation of the normal distribution of
         perturbations applied as mutations
     :param member_size: the number of parameters for each member
-    :param member_draw_bounds: the low/high boundaries for the initial
-        draw of parameters for a member. e.g. (-1.0, 1.0)
     :param elite_fraction: the fraction of members to withhold from mutation
     :param parent_fraction: the fraction of the population to maintain. remaining
         members are culled and replaced with more successful parents.
