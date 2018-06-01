@@ -370,7 +370,7 @@ class BaseGA(ABC):
         """
         if self._rank == 0:
             pickled_obj_file = open(filename, 'wb')
-            pickle.dump(self, pickled_obj_file, 2)
+            pickle.dump(self, pickled_obj_file, protocol=pickle.DEFAULT_PROTOCOL)
             pickled_obj_file.close()
 
     def __getstate__(self):
