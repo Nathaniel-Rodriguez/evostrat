@@ -101,15 +101,21 @@ class BaseGA(ABC):
             # Shares genealogy and saves using root node.
             if not (save_every is None):
                 if ((i % save_every) == 0) and (i != 0):
-                    self._share_genealogy()
+                    self._pre_save_configure()
                     self.save(save_filename)
 
             self._generation_number += 1
 
-        self._share_genealogy()
-
         if save:
+            self._pre_save_configure()
             self.save(save_filename)
+
+    def _pre_save_configure(self):
+        """
+        Carries out operations (such as MPI calls) to make sure all necessary
+        information is saved. As ROOT is the only saving member.
+        """
+        self._share_genealogy()
 
     def member_generator(self, rng):
         """
@@ -708,8 +714,15 @@ class RandNumTableModule(BaseGA):
         self._max_table_step = kwargs.get("max_table_step", 5)
         self._max_param_step = kwargs.get("max_param_step", 1)
         self._rand_num_table *= self._sigma
-        self._member = self._make_member(self._mutation_rng,
-                                         self._member_genealogy)
+        self._member = self._initialize_member()
+
+    def _initialize_member(self):
+        """
+        For initializing this rank's member
+        :return: a new array
+        """
+
+        return self._make_member(self._mutation_rng, self._member_genealogy)
 
     def _draw_random_parameter_slices(self, rng):
         """
@@ -770,8 +783,7 @@ class RandNumTableModule(BaseGA):
         self._table_rng = np.random.RandomState(self._rand_num_table_seed)
         self._rand_num_table = self._table_rng.randn(self._rand_num_table_size)
         self._rand_num_table *= self._sigma
-        self._member = self._make_member(self._mutation_rng,
-                                         self._member_genealogy)
+        self._member = self._initialize_member()
 
 
 class AnnealingModule(BaseGA):
@@ -780,7 +792,6 @@ class AnnealingModule(BaseGA):
     Can be inherited to give access to cooling schedules.
 
     The mutator should be defined so that
-    TODO: Genealogy doesn't track step-size changes, need find way to do that
     self._generation_number is fed to the schedule to output a scaling factor
     for the mutation rate or step size (usually sigma).
     """
@@ -860,8 +871,226 @@ class AnnealingModule(BaseGA):
                   " set before running evolution.")
 
 
-# have to add init, override mutator and make_member
-# class AnnealingRandNumTableGA(AnnealingModule):
+class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
+    """
+    Annealing requires a lot of specialization.
+    """
+
+    def __init__(self, **kwargs):
+        """
+        We need to initialize a
+        :param kwargs:
+        """
+        super().__init__(**kwargs)
+        self._perturbation = np.zeros(self._member_size, dtype=np.float32)
+        self._member_temperatures = [self._cooling_schedule(self._generation_number)]
+        self._population_temperatures = [[] for i in range(self._size)]
+
+    @property
+    def best(self):
+        """
+        :return: generates and returns the best member of the population.
+            Only Rank==0 should be accessing this property.
+        """
+
+        try:
+            return self._make_member(self._mutation_rng,
+                                     self._population_genealogy[
+                                        np.argsort(self._cost_history[-1])[0]],
+                                     self._population_temperatures[
+                                         np.argsort(self._cost_history[-1])[0]])
+        except IndexError:
+            raise IndexError("No score or population genealogy from which"
+                             "to generate best. Run optimization first.")
+
+    @property
+    def population(self):
+        """
+        :return: a list of all members of the current population.
+            Only Rank==0 should be accessing this property.
+        """
+
+        try:
+            return [self._make_member(self._mutation_rng, member,
+                                      self._population_temperatures[i])
+                    for i, member in enumerate(self._population_genealogy)]
+        except IndexError:
+            raise IndexError("No score or population genealogy"
+                             "Run optimization first.")
+        except TypeError:
+            raise TypeError("Need to set mutation and member generating functions")
+
+    def _initialize_member(self):
+        """
+        For initializing this rank's member
+        :return: a new array
+        """
+
+        return self._make_member(self._mutation_rng, self._member_genealogy,
+                                 self._member_temperatures)
+
+    def member_generator(self, rng, *args, **kwargs):
+        """
+        Uses initial guess to build initial members. This results in a
+        somewhat different distribution of initial parameters as the BasicGA's
+        draw.
+
+        Draws from the perturbation distribution. If the member hasn't
+        been created yet it creates a new one from initial guess, else it
+        uses assignment to copy. This ensures allocation only occurs during
+        initialization and not during the run.
+
+        :return 1d numpy float32 array that represents member
+        """
+
+        if not hasattr(self, '_member'):
+            self._member = self._initial_guess.copy()
+        else:
+            self._member[:] = self._initial_guess[:]
+
+        # Mutation is applied here, as fitness is calculated first and mutation last
+        self.mutator(self._member, rng, kwargs['temperature'])
+
+        return self._member
+
+    def _pre_save_configure(self):
+        """
+        Add temperature sharing before saving so that ROOT can reconstruct each
+        member.
+        """
+        super()._pre_save_configure()
+        self._share_temperatures()
+
+    def _dispatch_temperatures(self, messenger_list):
+        """
+        Iterates through a messenger list and sends/receives the genealogies
+        for each pair of ranks
+        """
+        for messenger in messenger_list:
+            # something went terribly wrong if node is sending to itself
+            assert (messenger[0] != messenger[1])
+
+            # send/recv temperatures
+            if self._rank == messenger[0]:
+                self._comm.send(self._member_temperatures, dest=messenger[1])
+
+            if self._rank == messenger[1]:
+                self._member_temperatures = self._comm.recv(source=messenger[0])
+
+    def _update_population(self, all_costs):
+        """
+        determines the cost ranking of all the costs for each node(rank) and
+        then determines which ranks need new members, which are randomly
+        selected and sent from the set of surviving members.
+        Then all members except for the elite are mutated.
+        """
+
+        # argsort returns the indexes of all_costs that would sort the array
+        # This means the first value is the highest performing rank while the
+        # last value is the lowest performing rank
+        l2g_ranks = np.argsort(all_costs)
+        messenger_list = self._construct_message_list(l2g_ranks)
+        self._dispatch_messages(messenger_list)
+        self._dispatch_temperatures(messenger_list)
+        self._construct_received_members(messenger_list)
+        self._mutate_population(l2g_ranks)
+
+    def _mutate_population(self, l2g_ranks):
+        """
+        Preserve the top _num_elite members, mutate the rest
+        """
+        for cost_index, rank in enumerate(l2g_ranks):
+            if cost_index >= self._num_elite:
+                if rank == self._rank:
+                    # get temperature
+                    temperature = self._cooling_schedule(self._generation_number)
+                    self._member_temperatures.append(temperature)
+
+                    # draw mutation seed
+                    seed = self._seed_rng.randint(0, self._max_seed)
+                    self._member_genealogy.append(seed)
+
+                    # apply mutation
+                    self._mutation_rng.seed(seed)
+                    self._member = self.mutator(self._member,
+                                                self._mutation_rng,
+                                                temperature=temperature)
+
+    def mutator(self, member, rng, *args, **kwargs):
+        """
+        :param member: array to perturb
+        :param rng: seeded numpy rng
+        :param temperature: the annealing scaling factor
+        :return: member (reference to member passed in)
+        """
+
+        param_slices = self._draw_random_parameter_slices(rng)
+        table_slices = self._draw_random_table_slices(rng)
+        param_slices, table_slices = match_slices(param_slices, table_slices)
+        # We assign the table values to the perturbation member first
+        multi_slice_assign(self._perturbation, self._rand_num_table,
+                           param_slices, table_slices)
+        # Apply the annealing scaling factor, i.e. the temperature
+        np.multiply(self._perturbation, kwargs['temperature'],
+                    out=self._perturbation)
+        # With perturbation member complete, we can add to member
+        np.add(member, self._perturbation, out=member)
+
+        return member
+
+    def _make_member(self, rng, seed_list, *args, **kwargs):
+        """
+        :param rng: numpy rng
+        :param seed_list: genealogy of member
+        :param temperatures: temperature history of member
+        :return: a new member
+        """
+        rng.seed(seed_list[0])
+        new_member = self.member_generator(rng, temperature=kwargs['temperatures'][0])
+        for i, seed in enumerate(seed_list[1:]):
+            rng.seed(seed)
+            new_member = self.mutator(new_member, rng,
+                                      temperature=kwargs['temperatures'][i+1])
+
+        return new_member
+
+    def _construct_received_members(self, messenger_list):
+        """
+        Iterates through the messenger list and for ranks that recieved
+        a genealogy it builds a new member from it and replaces the current
+        member
+        """
+        for messenger in messenger_list:
+            if self._rank == messenger[1]:
+                self._member = self._make_member(self._mutation_rng,
+                                                 self._member_genealogy,
+                                                 self._member_temperatures)
+
+    def _share_temperatures(self):
+        """
+        Shares each members temperature list, which corresponds with their
+        genealogies so we know the multiplier for each perturbation.
+        """
+
+        self._population_temperatures = self._comm.gather(self._member_temperatures,
+                                                          root=0)
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state['_member_temperatures'] = self._member_temperatures
+        state['_population_temperatures'] = self._population_temperatures
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self._perturbation = np.zeros(self._member_size, dtype=np.float32)
+
+
+class TruncatedAnnealingRandNumTableGA(AnnealingRandNumTableGA, TruncatedSelection):
+    pass
+
+
+class SusAnnealingRandNumTableGA(AnnealingRandNumTableGA, SusSelection):
+    pass
 
 
 class TruncatedRandNumTableGA(RandNumTableModule, TruncatedSelection):
