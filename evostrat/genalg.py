@@ -95,7 +95,7 @@ class BaseGA(ABC):
         partial_objective = partial(objective, **kwargs)
         for i in range(num_iterations):
             if self._verbose and (self._rank == 0):
-                print("Generation:", self._generation_number)
+                print("Generation:", self._generation_number, flush=True)
             self._update(partial_objective)
 
             # Shares genealogy and saves using root node.
@@ -674,91 +674,6 @@ class RealMutator(BaseGA):
                                          self._member_genealogy)
 
 
-class AnnealingModule(BaseGA):
-    """
-    A version of the BaseGA that uses simulated annealing.
-    Can be inherited to give access to cooling schedules.
-
-    The mutator should be defined so that
-    TODO: Genealogy doesn't track step-size changes, need find way to do that
-    self._generation_number is fed to the schedule to output a scaling factor
-    for the mutation rate or step size (usually sigma).
-    """
-
-    def __init__(self, **kwargs):
-        """
-        :param cooling_schedule: a function or string. If string, the class
-            currently supports:
-                "exp" : "initial_temperature", "cooling_factor"
-
-        :param cooling_schedule_kwargs: default(None), dictionary of key word
-            arguments for the schedule.
-        :param kwargs: See BasicGA parameters
-        """
-        super().__init__(**kwargs)
-        self._cooling_schedule = kwargs.get('cooling_schedule', "exp")
-        self._cooling_schedule_kwargs = kwargs.get('cooling_schedule_kwargs', None)
-        self.assign_cooling_schedule(self._cooling_schedule,
-                                     self._cooling_schedule_kwargs)
-
-    def _exponential_cooling_schedule(self, time_step, initial_temperature=1.0,
-                                      cooling_factor=1.0):
-        """
-        Exponential decay cooling schedule
-        :param time_step: current time-step
-        :param initial_temperature: initial temperature (defaults 1.0)
-        :param cooling_factor: A value between [0,1] (defaults 1.0)
-        :return: New temperature
-        """
-
-        if (cooling_factor < 0) or (cooling_factor > 1):
-            raise AssertionError("Invalid input: Cooling factor must be"
-                                 " between 0 and 1.")
-        if initial_temperature < 0:
-            raise AssertionError("Invalid input: Initial temperature must be"
-                                 " greater > 0")
-
-        return initial_temperature * (cooling_factor ** time_step)
-
-    def assign_cooling_schedule(self, cooling_schedule,
-                                cooling_schedule_kwargs=None):
-        """
-        Assigns a cooling schedule to the evolutionary algorithm
-        :param cooling_schedule: "string" or function. Supports: "exp".
-        :param cooling_schedule_kwargs: key word arguments for cooling schedule
-        :return: None
-        """
-
-        if (cooling_schedule_kwargs is None) and \
-                (self._cooling_schedule_kwargs is None):
-            self._cooling_schedule_kwargs = {}
-        elif cooling_schedule_kwargs is not None:
-            self._cooling_schedule_kwargs = cooling_schedule_kwargs
-
-        if cooling_schedule == "exp":
-            self.schedule_type = "exp"
-            self._cooling_schedule = partial(self._exponential_cooling_schedule,
-                                             **self._cooling_schedule_kwargs)
-        else:
-            self.schedule_type = "external"
-            self._cooling_schedule = partial(cooling_schedule,
-                                             **self._cooling_schedule_kwargs)
-
-    def __getstate__(self):
-        state = super().__getstate__()
-        state["_cooling_schedule_kwargs"] = self._cooling_schedule_kwargs
-        state["schedule_type"] = self.schedule_type
-
-    def __setstate__(self, state):
-        super().__setstate__(state)
-
-        if self.schedule_type == "exp":
-            self.assign_cooling_schedule("exp", self._cooling_schedule_kwargs)
-        else:
-            print("Warning: External cooling schedule defined, needs to be"
-                  " set before running evolution.")
-
-
 class RandNumTableModule(BaseGA):
     """
     A basic GA that uses a cached random number table. This speeds up
@@ -857,6 +772,96 @@ class RandNumTableModule(BaseGA):
         self._rand_num_table *= self._sigma
         self._member = self._make_member(self._mutation_rng,
                                          self._member_genealogy)
+
+
+class AnnealingModule(BaseGA):
+    """
+    A version of the BaseGA that uses simulated annealing.
+    Can be inherited to give access to cooling schedules.
+
+    The mutator should be defined so that
+    TODO: Genealogy doesn't track step-size changes, need find way to do that
+    self._generation_number is fed to the schedule to output a scaling factor
+    for the mutation rate or step size (usually sigma).
+    """
+
+    def __init__(self, **kwargs):
+        """
+        :param cooling_schedule: a function or string. If string, the class
+            currently supports:
+                "exp" : "initial_temperature", "cooling_factor"
+
+        :param cooling_schedule_kwargs: default(None), dictionary of key word
+            arguments for the schedule.
+        :param kwargs: See BasicGA parameters
+        """
+        super().__init__(**kwargs)
+        self._cooling_schedule = kwargs.get('cooling_schedule', "exp")
+        self._cooling_schedule_kwargs = kwargs.get('cooling_schedule_kwargs', None)
+        self.assign_cooling_schedule(self._cooling_schedule,
+                                     self._cooling_schedule_kwargs)
+
+    def _exponential_cooling_schedule(self, time_step, initial_temperature=1.0,
+                                      cooling_factor=1.0):
+        """
+        Exponential decay cooling schedule
+        :param time_step: current time-step
+        :param initial_temperature: initial temperature (defaults 1.0)
+        :param cooling_factor: A value between [0,1] (defaults 1.0)
+        :return: New temperature
+        """
+
+        if (cooling_factor < 0) or (cooling_factor > 1):
+            raise AssertionError("Invalid input: Cooling factor must be"
+                                 " between 0 and 1.")
+        if initial_temperature < 0:
+            raise AssertionError("Invalid input: Initial temperature must be"
+                                 " greater > 0")
+
+        return initial_temperature * (cooling_factor ** time_step)
+
+    def assign_cooling_schedule(self, cooling_schedule,
+                                cooling_schedule_kwargs=None):
+        """
+        Assigns a cooling schedule to the evolutionary algorithm
+        :param cooling_schedule: "string" or function. Supports: "exp".
+        :param cooling_schedule_kwargs: key word arguments for cooling schedule
+        :return: None
+        """
+
+        if (cooling_schedule_kwargs is None) and \
+                (self._cooling_schedule_kwargs is None):
+            self._cooling_schedule_kwargs = {}
+
+        elif cooling_schedule_kwargs is not None:
+            self._cooling_schedule_kwargs = cooling_schedule_kwargs
+
+        if cooling_schedule == "exp":
+            self.schedule_type = "exp"
+            self._cooling_schedule = partial(self._exponential_cooling_schedule,
+                                             **self._cooling_schedule_kwargs)
+        else:
+            self.schedule_type = "external"
+            self._cooling_schedule = partial(cooling_schedule,
+                                             **self._cooling_schedule_kwargs)
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        state["_cooling_schedule_kwargs"] = self._cooling_schedule_kwargs
+        state["schedule_type"] = self.schedule_type
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+
+        if self.schedule_type == "exp":
+            self.assign_cooling_schedule("exp", self._cooling_schedule_kwargs)
+        else:
+            print("Warning: External cooling schedule defined, needs to be"
+                  " set before running evolution.")
+
+
+# have to add init, override mutator and make_member
+# class AnnealingRandNumTableGA(AnnealingModule):
 
 
 class TruncatedRandNumTableGA(RandNumTableModule, TruncatedSelection):
