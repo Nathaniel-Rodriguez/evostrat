@@ -1097,7 +1097,10 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
 
     def __setstate__(self, state):
         AnnealingModule.__setstate__(self, state)
-        # super().__setstate__(state)
+
+        # Reassign temperatures
+        self._member_temperatures = self._population_temperatures[self._rank][:]
+
         self._table_rng = np.random.RandomState(self._rand_num_table_seed)
         self._rand_num_table = self._table_rng.randn(self._rand_num_table_size)
         self._rand_num_table *= self._sigma
