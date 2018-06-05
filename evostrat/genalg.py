@@ -878,8 +878,12 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
 
     def __init__(self, **kwargs):
         """
-        We need to initialize a
-        :param kwargs:
+        Same initialization parameters as RandNumTableModule, with the addition
+        of those required for the AnnealingModule. This init function just
+        orders initialization so that member temperatures can be drawn from
+        the cooling schedule (which needs initialization first) and so that
+        member initialization has access to the member temperatures (which are
+        needed before the calls to the first mutation to build the first member)
         """
         AnnealingModule.__init__(self, **kwargs)
         self._member_size = len(self._initial_guess)
@@ -1031,6 +1035,9 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
 
     def mutator(self, member, rng, *args, **kwargs):
         """
+        The perturbation array is assigned values from the random number table
+        and then multiplied by the temperature. The perturbation is then added
+        to the new member.
         :param member: array to perturb
         :param rng: seeded numpy rng
         :param temperature: the annealing scaling factor
@@ -1096,6 +1103,10 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
         return state
 
     def __setstate__(self, state):
+        """
+        Mimics the order of initialiation in __init__ to make sure each attribute
+        has access to attributes it depends upon for initialization.
+        """
         AnnealingModule.__setstate__(self, state)
 
         # Reassign temperatures
