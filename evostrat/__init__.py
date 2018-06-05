@@ -64,3 +64,5 @@ from .evostrat import BoundedRandNumTableES
 from .genalg import TruncatedRandNumTableGA
 from .genalg import SusRandNumTableGA
 from .genalg import TruncatedRealMutatorGA
+from .genalg import TruncatedAnnealingRandNumTableGA
+from .genalg import SusAnnealingRandNumTableGA
