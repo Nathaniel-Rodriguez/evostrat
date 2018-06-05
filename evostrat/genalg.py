@@ -762,7 +762,6 @@ class RandNumTableModule(BaseGA):
 
     def __getstate__(self):
         state = super().__getstate__()
-
         state["_sigma"] = self._sigma
         state["_member_size"] = self._member_size
         state["_rand_num_table_size"] = self._rand_num_table_size
@@ -860,6 +859,7 @@ class AnnealingModule(BaseGA):
         state = super().__getstate__()
         state["_cooling_schedule_kwargs"] = self._cooling_schedule_kwargs
         state["schedule_type"] = self.schedule_type
+        return state
 
     def __setstate__(self, state):
         super().__setstate__(state)
@@ -881,10 +881,23 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
         We need to initialize a
         :param kwargs:
         """
-        super().__init__(**kwargs)
-        self._perturbation = np.zeros(self._member_size, dtype=np.float32)
+        AnnealingModule.__init__(self, **kwargs)
+        self._member_size = len(self._initial_guess)
         self._member_temperatures = [self._cooling_schedule(self._generation_number)]
+        self._perturbation = np.zeros(self._member_size, dtype=np.float32)
         self._population_temperatures = [[] for i in range(self._size)]
+
+        self._rand_num_table_seed = kwargs.get('rand_num_table_seed',
+                                               self._py_rng.sample(
+                                                    range(self._max_seed), 1)[0])
+        self._table_rng = np.random.RandomState(self._rand_num_table_seed)
+        self._rand_num_table_size = kwargs.get("rand_num_table_size", 20000000)
+        self._rand_num_table = self._table_rng.randn(self._rand_num_table_size)
+        self._sigma = kwargs['sigma']
+        self._max_table_step = kwargs.get("max_table_step", 5)
+        self._max_param_step = kwargs.get("max_param_step", 1)
+        self._rand_num_table *= self._sigma
+        self._member = self._initialize_member()
 
     @property
     def best(self):
@@ -897,7 +910,7 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
             return self._make_member(self._mutation_rng,
                                      self._population_genealogy[
                                         np.argsort(self._cost_history[-1])[0]],
-                                     self._population_temperatures[
+                                     temperatures=self._population_temperatures[
                                          np.argsort(self._cost_history[-1])[0]])
         except IndexError:
             raise IndexError("No score or population genealogy from which"
@@ -927,7 +940,7 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
         """
 
         return self._make_member(self._mutation_rng, self._member_genealogy,
-                                 self._member_temperatures)
+                                 temperatures=self._member_temperatures)
 
     def member_generator(self, rng, *args, **kwargs):
         """
@@ -949,7 +962,7 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
             self._member[:] = self._initial_guess[:]
 
         # Mutation is applied here, as fitness is calculated first and mutation last
-        self.mutator(self._member, rng, kwargs['temperature'])
+        self.mutator(self._member, rng, temperature=kwargs['temperature'])
 
         return self._member
 
@@ -1064,7 +1077,7 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
             if self._rank == messenger[1]:
                 self._member = self._make_member(self._mutation_rng,
                                                  self._member_genealogy,
-                                                 self._member_temperatures)
+                                                 temperatures=self._member_temperatures)
 
     def _share_temperatures(self):
         """
@@ -1080,9 +1093,16 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
         state['_member_temperatures'] = self._member_temperatures
         state['_population_temperatures'] = self._population_temperatures
 
+        return state
+
     def __setstate__(self, state):
-        super().__setstate__(state)
+        AnnealingModule.__setstate__(self, state)
+        # super().__setstate__(state)
+        self._table_rng = np.random.RandomState(self._rand_num_table_seed)
+        self._rand_num_table = self._table_rng.randn(self._rand_num_table_size)
+        self._rand_num_table *= self._sigma
         self._perturbation = np.zeros(self._member_size, dtype=np.float32)
+        self._member = self._initialize_member()
 
 
 class TruncatedAnnealingRandNumTableGA(AnnealingRandNumTableGA, TruncatedSelection):
