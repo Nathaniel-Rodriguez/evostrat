@@ -162,14 +162,22 @@ class BaseGA(ABC):
         :return: None
         """
         # determine fitness and broadcast
-        local_cost = np.empty(1, dtype=np.float32)
-        local_cost[0] = objective(self._member)
         all_costs = np.empty(self._size, dtype=np.float32)
-        self._comm.Allgather([local_cost, self._MPI.FLOAT],
+        self._comm.Allgather([self._call_objective(objective), self._MPI.FLOAT],
                              [all_costs, self._MPI.FLOAT])
         self._update_log(all_costs)
         # Apply mutations, elite selection, and broadcast genealogies
         self._update_population(all_costs)
+
+    def _call_objective(self, objective):
+        """
+        :param objective: a partial function, takes only parameters as input
+        :return: np.float32 array of the cost
+        """
+        local_cost = np.empty(1, dtype=np.float32)
+        local_cost[0] = objective(self._member)
+
+        return local_cost
 
     @property
     def best(self):
@@ -1119,6 +1127,43 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
         self._perturbation = np.zeros(self._member_size, dtype=np.float32)
         self._member = self._initialize_member()
 
+
+class RescalingMixin:
+    """
+    Implements rescaling of parameters before function evaluation
+    Should be inherited first, so that it has access to self._member
+    for size information.
+
+    A rescaled member is created and elements of the member are copied into the
+    rescaled member and then multiplied by the scaling factor, which is another
+    array that is passed from outside and is of size #member
+    """
+
+    def __init__(self, rescaling_factors, **kwargs):
+        """
+        :param rescaling_factors: a numpy float32 array that is the same shape
+            as the member
+        :param kwargs:
+        """
+        super().__init__(**kwargs)
+        self.rescaling_factors = rescaling_factors
+        self._rescaled_member = np.zeros(self._member.shape, dtype=np.float32)
+        if self.rescaling_factors.shape != self._rescaled_member.shape:
+            raise AssertionError("Rescaling factors not the correct shape")
+
+    def _call_objective(self, objective):
+        """
+        Override: update rescaled member and use it instead of the member for
+        evaluating the objective.
+        :param objective: a partial function, takes only parameters as input
+        :return: np.float32 array of the cost
+        """
+        np.multiply(self._member, self.rescaling_factors,
+                    out=self._rescaled_member)
+        local_cost = np.empty(1, dtype=np.float32)
+        local_cost[0] = objective(self._rescaled_member)
+
+        return local_cost
 
 class TruncatedAnnealingRandNumTableGA(AnnealingRandNumTableGA, TruncatedSelection):
     """
