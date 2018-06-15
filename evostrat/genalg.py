@@ -98,11 +98,12 @@ class BaseGA(ABC):
                 print("Generation:", self._generation_number, flush=True)
             self._update(partial_objective)
 
-            # Shares genealogy and saves using root node.
-            if not (save_every is None):
-                if ((i % save_every) == 0) and (i != 0):
-                    self._pre_save_configure()
-                    self.save(save_filename)
+            # TODO: Removed iterative saving until MPI bug found
+            # # Shares genealogy and saves using root node.
+            # if not (save_every is None):
+            #     if ((i % save_every) == 0) and (i != 0):
+            #         self._pre_save_configure()
+            #         self.save(save_filename)
 
             self._generation_number += 1
 
