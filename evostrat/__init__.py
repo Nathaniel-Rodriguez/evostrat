@@ -66,3 +66,5 @@ from .genalg import SusRandNumTableGA
 from .genalg import TruncatedRealMutatorGA
 from .genalg import TruncatedAnnealingRandNumTableGA
 from .genalg import SusAnnealingRandNumTableGA
+from .genalg import RescaledSusAnnealingRandNumTableGA
+from .genalg import BoundedSusAnnealingRandNumTableGA

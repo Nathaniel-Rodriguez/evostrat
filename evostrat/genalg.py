@@ -1143,7 +1143,6 @@ class RescalingMixin:
         """
         :param rescaling_factors: a numpy float32 array that is the same shape
             as the member
-        :param kwargs:
         """
         super().__init__(**kwargs)
         self.rescaling_factors = rescaling_factors
@@ -1164,6 +1163,97 @@ class RescalingMixin:
         local_cost[0] = objective(self._rescaled_member)
 
         return local_cost
+
+
+class BoundingMixin(RescalingMixin):
+    """
+    A mixin for bounding the range of values of the member
+    """
+
+    def __init__(self, bound, **kwargs):
+        """
+        :param bound: tuple with first value min, and second value max
+        """
+        super().__init__(**kwargs)
+        self.bound = np.array(bound, dtype=np.float32)
+
+    def _call_objective(self, objective):
+        """
+        Override: Clips rescaled member and then applies rescaling
+        :param objective: a partial function, takes only parameters as input
+        :return: npfloat32 array of the cost
+        """
+
+        np.clip(self._member, a_min=self.bound[0], a_max=self.bound[1],
+                out=self._rescaled_member)
+        np.multiply(self._rescaled_member, self.rescaling_factors,
+                    out=self._rescaled_member)
+        local_cost = np.empty(1, dtype=np.float32)
+        local_cost[0] = objective(self._rescaled_member)
+
+        return local_cost
+
+
+class BoundedSusAnnealingRandNumTableGA(BoundingMixin, AnnealingRandNumTableGA,
+                                        SusSelection):
+    """
+    Implements stochastic universal sampling and a real valued random number
+    table GA.
+
+    :param initial_guess: numpy float32 array from which to draw perturbations around
+    :param objective: the object function, returns a cost scalar
+    :param obj_kwargs: key word arguments of the objective function (default {})
+    :param verbose: True/False whether to print output (default False)
+    :param elite_fraction: fraction of best performing that go unmutated to
+        next generation (default 0.1)
+    :param num_elite: same as above, can set one or the other
+    :param seed: used to generate all seeds and random values (default: 1)
+    :param sigma: the standard deviation of mutation perturbations
+    :param rand_num_table_size: the number of elements in the random table
+    :param max_table_step: the maximum random stride for table slices
+    :param max_param_step: the maximum step size for parameter slices
+    :param cooling_schedule: a function or string. If string, the class
+        currently supports:
+            "exp" : "initial_temperature", "cooling_factor"
+
+    :param cooling_schedule_kwargs: default(None), dictionary of key word
+        arguments for the schedule.
+    :param rescaling_factors: a numpy float32 array that is the same shape
+        as the member
+    :param bound: tuple with first value min, and second value max
+    """
+    pass
+
+
+class RescaledSusAnnealingRandNumTableGA(RescalingMixin, AnnealingRandNumTableGA,
+                                         SusSelection):
+    """
+    Implements stochastic universal sampling and a real valued random number
+    table GA.
+
+    :param initial_guess: numpy float32 array from which to draw perturbations around
+    :param objective: the object function, returns a cost scalar
+    :param obj_kwargs: key word arguments of the objective function (default {})
+    :param verbose: True/False whether to print output (default False)
+    :param elite_fraction: fraction of best performing that go unmutated to
+        next generation (default 0.1)
+    :param num_elite: same as above, can set one or the other
+    :param seed: used to generate all seeds and random values (default: 1)
+    :param sigma: the standard deviation of mutation perturbations
+    :param rand_num_table_size: the number of elements in the random table
+    :param max_table_step: the maximum random stride for table slices
+    :param max_param_step: the maximum step size for parameter slices
+    :param cooling_schedule: a function or string. If string, the class
+        currently supports:
+            "exp" : "initial_temperature", "cooling_factor"
+
+    :param cooling_schedule_kwargs: default(None), dictionary of key word
+        arguments for the schedule.
+    :param rescaling_factors: a numpy float32 array that is the same shape
+        as the member
+    """
+    pass
+
 
 class TruncatedAnnealingRandNumTableGA(AnnealingRandNumTableGA, TruncatedSelection):
     """
