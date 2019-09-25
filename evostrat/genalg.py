@@ -929,6 +929,35 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
             raise IndexError("No score or population genealogy from which"
                              "to generate best. Run optimization first.")
 
+    def get_top_genealogy(self, n):
+        """
+        :param n: the number of best genes to return.
+        :return: returns top n genes.
+        """
+
+        try:
+            return [self._population_genealogy[i]
+                    for i in np.argsort(self._cost_history[-1])[0:n]]
+        except IndexError:
+            raise IndexError("No score or population genealogy from which"
+                             "to generate best. Run optimization first.")
+
+    def get_top_members(self, n):
+        """
+        :param n: the number of best members to return.
+        :return: returns top n members.
+        """
+
+        try:
+            return [np.copy(
+                self._make_member(self._mutation_rng,
+                                  self._population_genealogy[i],
+                                  temperatures=self._population_temperatures[i]))
+                    for i in np.argsort(self._cost_history[-1])[0:n]]
+        except IndexError:
+            raise IndexError("No score or population genealogy from which"
+                             "to generate best. Run optimization first.")
+
     @property
     def population(self):
         """
@@ -937,8 +966,9 @@ class AnnealingRandNumTableGA(RandNumTableModule, AnnealingModule):
         """
 
         try:
-            return [self._make_member(self._mutation_rng, member,
-                                      self._population_temperatures[i])
+            return [np.copy(
+                self._make_member(self._mutation_rng, member,
+                                  temperatures=self._population_temperatures[i]))
                     for i, member in enumerate(self._population_genealogy)]
         except IndexError:
             raise IndexError("No score or population genealogy"
